@@ -1,0 +1,72 @@
+"""
+Skills API 测试
+"""
+
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
+
+from app.models import User
+from app.main import app
+from app.core.database import get_db
+from tests.conftest import auth_headers
+
+
+@pytest_asyncio.fixture
+async def skill_client(db_engine):
+    """HTTP 测试客户端"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+    session_maker = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with session_maker() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()
+
+
+class TestSkillAPI:
+    """测试技能 API"""
+
+    @pytest.mark.asyncio
+    async def test_list_skills_success(self, skill_client: AsyncClient, test_user: User):
+        """测试获取技能列表"""
+        response = await skill_client.get(
+            "/api/skills",
+            headers=auth_headers(test_user.id),
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_list_skills_unauthorized(self, skill_client: AsyncClient):
+        """测试未授权访问"""
+        response = await skill_client.get("/api/skills")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_create_skill_success(self, skill_client: AsyncClient, test_admin: User):
+        """测试创建技能成功"""
+        response = await skill_client.post(
+            "/api/skills",
+            json={
+                "name": "新技能",
+                "display_name": "新技能",
+                "description": "测试创建",
+                "content": "技能内容",
+            },
+            headers=auth_headers(test_admin.id),
+        )
+        assert response.status_code in [200, 201]
+
+    @pytest.mark.asyncio
+    async def test_get_skill_not_found(self, skill_client: AsyncClient, test_user: User):
+        """测试技能不存在"""
+        response = await skill_client.get(
+            "/api/skills/99999",
+            headers=auth_headers(test_user.id),
+        )
+        assert response.status_code == 404
