@@ -121,7 +121,7 @@
             :key="index"
           >
             <div
-              v-if="!(msg.isStreaming && !msg.content && !msg.thinkingContent)"
+              v-if="!(msg.isStreaming && !msg.content && !msg.thinkingContent && !(msg.toolCalls && msg.toolCalls.length > 0))"
               class="message-row"
               :class="msg.role"
             >
@@ -1121,7 +1121,7 @@ async function sendMessage() {
                 case 'tool_result':
                   if (!streamingMsg.toolCalls) streamingMsg.toolCalls = []
                   streamingMsg.toolCalls.push({ name: data.name, result: data.result })
-                  // tool result received
+                  scrollToBottom()
                   break
                 case 'done':
                   // 提交最终缓冲内容（工具调用期间所有规划文本已被丢弃）
