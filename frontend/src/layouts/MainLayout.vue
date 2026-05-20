@@ -141,6 +141,7 @@ const navKeyMap: Record<string, string> = {
   '/ai-management': 'nav.aiManagement',
   '/extension-management': 'nav.extensionManagement',
   '/system-ops': 'nav.systemOps',
+  '/security-gateway': 'nav.securityGateway',
 }
 
 // Route visibility check
