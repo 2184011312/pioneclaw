@@ -173,6 +173,9 @@ class AgentLoop:
         tracer: Optional[AgentTracer] = None,  # 执行追踪器（借鉴 LangSmith）
         inbox_queue: Optional[Any] = None,  # Agent 间消息收件箱（asyncio.Queue）
         system_prompt: Optional[str] = None,  # 系统提示词（覆盖默认）
+        # Context 压缩（Phase 1: Context 卫生）
+        compactor: Optional[Any] = None,  # Compactor 实例（LLM 级压缩）
+        context_pruner: Optional[Any] = None,  # ContextPruner 实例（Microcompact + Snip）
     ):
         """
         初始化 AgentLoop
@@ -199,6 +202,8 @@ class AgentLoop:
             interrupt_manager: 中断管理器（借鉴 LangGraph interrupt/resume）
             tracer: 执行追踪器（借鉴 LangSmith tracing）
             inbox_queue: Agent 间消息收件箱（asyncio.Queue），非 None 时每轮迭代前检查消息
+            compactor: Compactor 实例（LLM 级对话压缩），None 时禁用
+            context_pruner: ContextPruner 实例（Microcompact + Snip），None 时禁用
         """
         self.provider = provider
         self.tools = tools
@@ -243,6 +248,10 @@ class AgentLoop:
 
         # Agent 间消息收件箱
         self._inbox_queue = inbox_queue
+
+        # Context 压缩（Phase 1: Context 卫生）
+        self._compactor = compactor
+        self._context_pruner = context_pruner
 
         # 工具调用去重
         self.seen_tool_call_ids: set[str] = set()
@@ -461,6 +470,10 @@ class AgentLoop:
                         })
                         logger.debug(f"Inbox message from '{sender}' injected at iteration {iteration}")
 
+                # Context 压缩链（Phase 1: Context 卫生）
+                # 顺序：Snip (零成本) → MicroCompacter (清除旧工具结果) → Compactor (LLM 级压缩)
+                messages = await self._prune_context(messages, iteration)
+
                 # 调用 LLM
                 iter_start = time.time()
                 content_buffer = ""
@@ -570,7 +583,15 @@ class AgentLoop:
 
                 logger.info(f"Tool calls received: {len(tool_calls_buffer)} calls - {[tc.get('name') for tc in tool_calls_buffer]}")
 
-                # 执行工具调用
+                # 并行执行优化：如果所有工具都是 parallel_safe，并行执行
+                # 成功后清空 tool_calls_buffer，下面的 for 循环跳过
+                if len(tool_calls_buffer) > 1:
+                    tool_calls_buffer = await self._try_parallel_execute(
+                        tool_calls_buffer, messages, content_buffer,
+                        reasoning_content_buffer, cancel_token, yield_intermediate,
+                    )
+
+                # 顺序执行工具调用
                 for tool_call in tool_calls_buffer:
                     try:
                         if total_tool_calls >= self.max_iterations:
@@ -869,20 +890,50 @@ class AgentLoop:
             chat_method = None
 
         if chat_method:
-            try:
-                async for chunk in chat_method(
-                    messages=messages,
-                    tools=tools,
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                ):
-                    # chunk 是 StreamChunk dataclass，需要转换为 dict
-                    yield self._convert_stream_chunk(chunk)
-            except Exception as e:
-                import traceback
-                logger.error(f"_call_llm_stream error: {e}\n{traceback.format_exc()}")
-                yield {"error": str(e)}
+            max_retries = 3
+            for attempt in range(max_retries + 1):
+                try:
+                    async for chunk in chat_method(
+                        messages=messages,
+                        tools=tools,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ):
+                        # chunk 是 StreamChunk dataclass，需要转换为 dict
+                        yield self._convert_stream_chunk(chunk)
+                    return  # 成功完成，退出
+                except Exception as e:
+                    import traceback
+                    logger.error(f"_call_llm_stream error (attempt {attempt + 1}/{max_retries}): {e}\n{traceback.format_exc()}")
+
+                    # Key 轮换：如果是认证/限流错误，尝试轮换 Key
+                    if self._key_rotator and self._key_rotator.should_rotate_key(e):
+                        new_key = self._key_rotator.next_key()
+                        if new_key and attempt < max_retries:
+                            provider.api_key = new_key
+                            self._key_rotation_count += 1
+                            delay = 1.0 * attempt  # 渐进延迟
+                            logger.info(
+                                f"Rotating API key (attempt {attempt + 1}), "
+                                f"retrying in {delay}s..."
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+
+                    # 瞬态错误（502/503/504/连接超时）：重试
+                    if self._is_transient_error(e) and attempt < max_retries:
+                        delay = min(2.0 * (2 ** attempt), 16.0)
+                        logger.info(
+                            f"Transient error, retrying in {delay}s "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # 无法恢复，返回错误
+                    yield {"error": str(e)}
+                    return
         else:
             yield {"error": "Provider does not support streaming"}
 
@@ -946,6 +997,250 @@ class AgentLoop:
             result["usage"] = chunk.usage
 
         return result
+
+    def _is_transient_error(self, error: Exception) -> bool:
+        """判断是否为可重试的瞬态错误（502/503/504/连接超时）"""
+        error_text = f"{type(error).__name__}: {error}".lower()
+        transient_hints = (
+            "502", "503", "504", "connection", "timeout",
+            "read error", "server disconnected", "eof",
+        )
+        return any(hint in error_text for hint in transient_hints)
+
+    async def _try_parallel_execute(
+        self,
+        tool_calls_buffer: List[Dict[str, Any]],
+        messages: List[Dict[str, Any]],
+        content_buffer: str,
+        reasoning_content_buffer: str,
+        cancel_token: Optional[CancelToken],
+        yield_intermediate: bool,
+    ) -> List[Dict[str, Any]]:
+        """尝试并行执行所有安全工具。
+
+        如果所有工具都是 parallel_safe，则并行执行并追加结果到 messages。
+        返回空列表表示已执行（for 循环跳过），否则返回原始 buffer。
+        """
+        if not self.tools or len(tool_calls_buffer) < 2:
+            return tool_calls_buffer
+
+        # 检查是否所有工具都可并行
+        all_safe = True
+        for tc in tool_calls_buffer:
+            tc_name = tc.get("name", "")
+            tool_instance = self.tools.get_tool(tc_name)
+            if not tool_instance or not getattr(tool_instance, "is_parallel_safe", False):
+                all_safe = False
+                break
+
+        if not all_safe:
+            return tool_calls_buffer
+
+        logger.info(
+            f"Parallel executing {len(tool_calls_buffer)} safe tools: "
+            f"{[tc.get('name') for tc in tool_calls_buffer]}"
+        )
+
+        # 解析所有工具调用参数
+        parsed: List[Tuple[str, str, Dict[str, Any]]] = []
+        for tc in tool_calls_buffer:
+            tc_id = tc.get("id", "")
+            tc_name = tc.get("name", "")
+            tc_args = tc.get("arguments", {})
+
+            if isinstance(tc_id, list):
+                tc_id = str(tc_id[0]) if tc_id else ""
+            elif not isinstance(tc_id, str):
+                tc_id = str(tc_id) if tc_id else ""
+
+            if isinstance(tc_args, str):
+                try:
+                    tc_args = json.loads(tc_args)
+                except Exception:
+                    tc_args = {}
+
+            parsed.append((tc_id, tc_name, tc_args))
+
+        # 并行执行所有工具
+        async def execute_one(tc_id, tc_name, tc_args):
+            try:
+                result = await self._execute_tool(tc_name, tc_args)
+                return (tc_id, tc_name, tc_args, result, None)
+            except Exception as e:
+                return (tc_id, tc_name, tc_args, None, e)
+
+        coroutines = [execute_one(tc_id, tc_name, tc_args) for tc_id, tc_name, tc_args in parsed]
+        results = await asyncio.gather(*coroutines)
+
+        # 处理结果并追加到 messages
+        has_failure = False
+        for tc_id, tc_name, tc_args, result, error in results:
+            total_tool_calls_local = len(tool_calls_buffer)
+
+            if tc_id:
+                self.seen_tool_call_ids.add(tc_id)
+
+            if error is None and result is not None:
+                self.last_tool_results[tc_name] = result
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": content_buffer or "",
+                    "tool_calls": [{
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": tc_name,
+                            "arguments": json.dumps(tc_args),
+                        },
+                    }],
+                }
+                if reasoning_content_buffer:
+                    assistant_msg["reasoning_content"] = reasoning_content_buffer
+                messages.append(assistant_msg)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": result,
+                })
+            else:
+                if has_failure:
+                    # 错误级联：第一个失败后，其余取消
+                    messages.append({
+                        "role": "assistant",
+                        "content": content_buffer or "",
+                        "tool_calls": [{
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc_name,
+                                "arguments": json.dumps(tc_args),
+                            },
+                        }],
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": "[Cancelled: sibling tool failed]",
+                    })
+                else:
+                    has_failure = True
+                    error_msg = f"Tool execution failed: {str(error) if error else 'unknown error'}"
+                    messages.append({
+                        "role": "assistant",
+                        "content": content_buffer or "",
+                        "tool_calls": [{
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc_name,
+                                "arguments": json.dumps(tc_args),
+                            },
+                        }],
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": error_msg,
+                    })
+
+        if yield_intermediate:
+            elapsed = 0  # We didn't track time, but parallel is faster
+            logger.info(f"Parallel tool execution complete for {len(parsed)} tools")
+
+        return []  # 返回空列表，for 循环跳过
+
+    async def _prune_context(
+        self,
+        messages: List[Dict[str, Any]],
+        iteration: int,
+    ) -> List[Dict[str, Any]]:
+        """Context 压缩链：Snip → MicroCompacter → Compactor
+
+        每轮 LLM 调用前执行，逐层压缩释放 context 空间。
+        返回（可能新的）消息列表。
+        """
+        if not messages:
+            return messages
+
+        total_saved = 0
+
+        # Layer 1: Snip — 零成本裁剪（空消息、超长 reasoning）
+        if self._context_pruner:
+            snipped, saved = self._context_pruner.snip_prune(messages)
+            messages = snipped
+            total_saved += saved
+
+        # Layer 2: MicroCompacter — 清除旧工具结果内容
+        if self._context_pruner:
+            messages, saved = self._context_pruner.micro_compact(messages)
+            total_saved += saved
+
+        # Layer 3: Compactor — LLM 级对话压缩（达到阈值时触发）
+        if self._compactor:
+            estimated_tokens = self._compactor._estimate_tokens(messages)
+            if self._compactor.should_compact(messages, estimated_tokens):
+                result = await self._compactor.compact(messages)
+                messages = self._rebuild_after_compact(messages, result)
+                logger.info(f"Compactor triggered at iteration {iteration}")
+
+        if total_saved > 0:
+            logger.debug(
+                f"Context prune at iter {iteration}: saved ~{total_saved} chars, "
+                f"messages now: {len(messages)}"
+            )
+
+        return messages
+
+    def _rebuild_after_compact(
+        self,
+        messages: List[Dict[str, Any]],
+        compact_result: Any,
+    ) -> List[Dict[str, Any]]:
+        """Compactor 压缩后重建消息列表：
+
+        system prompt + 压缩摘要（注入为 user 消息）+ 最近 N 条消息
+        """
+        keep_recent = getattr(
+            getattr(self._compactor, "config", None), "keep_recent_messages", 8
+        )
+
+        # 提取 system prompt（第一条）
+        system_prompt = ""
+        start_idx = 0
+        if messages and messages[0].get("role") == "system":
+            system_prompt = messages[0].get("content", "")
+            start_idx = 1
+
+        # 保留最近 keep_recent 条消息
+        core = messages[start_idx:]
+        recent = core[-keep_recent:] if len(core) > keep_recent else core
+
+        # 获取摘要（支持 CompactionResult 对象和 dict）
+        if hasattr(compact_result, "summary"):
+            summary = compact_result.summary
+        elif isinstance(compact_result, dict):
+            summary = compact_result.get("summary", "")
+        else:
+            summary = str(compact_result)
+
+        if not summary:
+            # Fallback: 如果压缩失败，只保留最近消息
+            rebuilt = [{"role": "system", "content": system_prompt}] if system_prompt else []
+            rebuilt.extend(recent)
+            return rebuilt
+
+        # 重建：system + 摘要 + 最近消息
+        rebuilt: List[Dict[str, Any]] = []
+        if system_prompt:
+            rebuilt.append({"role": "system", "content": system_prompt})
+
+        rebuilt.append({
+            "role": "user",
+            "content": f"[Previous conversation summary]\n{summary}",
+        })
+        rebuilt.extend(recent)
+
+        return rebuilt
 
     async def _execute_tool(
         self,

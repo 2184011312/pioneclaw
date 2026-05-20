@@ -60,9 +60,10 @@ logger = logging.getLogger(__name__)
 
 class CurrentTimeTool(BaseTool):
     """获取当前时间"""
-    
+
     name = "current_time"
     description = "获取当前日期和时间"
+    is_parallel_safe = True
     parameters = {
         "timezone": ToolParameter(
             type="string",
@@ -122,6 +123,7 @@ class CalculatorTool(BaseTool):
 
     name = "calculator"
     description = "执行数学计算，支持 + - * / // % ** ()，如 '2 + 3 * 4'"
+    is_parallel_safe = True
     parameters = {
         "expression": ToolParameter(
             type="string",
@@ -147,6 +149,7 @@ class ReadFileTool(BaseTool):
 
     name = "read_file"
     description = "读取文件内容，支持文本文件（.txt, .md, .csv, .json 等）、Word（.docx）、Excel（.xlsx, .xls）、PowerPoint（.pptx）和 PDF（.pdf）"
+    is_parallel_safe = True
     parameters = {
         "path": ToolParameter(
             type="string",
@@ -792,6 +795,7 @@ class ListDirTool(BaseTool):
     """列出目录内容"""
 
     name = "list_dir"
+    is_parallel_safe = True
     description = "列出指定目录的内容，显示文件和子目录的名称、类型和大小"
     parameters = {
         "path": ToolParameter(
@@ -858,6 +862,7 @@ class GrepTool(BaseTool):
     """代码内容搜索工具 — 用正则表达式搜索文件内容"""
 
     name = "grep"
+    is_parallel_safe = True
     description = (
         "在文件内容中搜索匹配正则表达式模式的行。"
         "支持文件类型过滤（glob 参数）、上下文行（-A/-B/-C）、大小写不敏感（-i）、"

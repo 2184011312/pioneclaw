@@ -236,7 +236,19 @@ async def execute_agent(
         
         # 创建 LLM Provider（简化版，直接使用配置）
         provider = SimpleLLMProvider(config=model_config)
-        
+
+        # Context 压缩组件（Phase 1）
+        from app.modules.agent.context_pruner import ContextPruner
+        from app.modules.agent.compactor import Compactor, CompactionConfig
+        context_pruner = ContextPruner()
+        compactor = Compactor(
+            config=CompactionConfig(),
+            llm_client=provider,
+            user_id=current_user.id,
+            session_id=str(execution.id),
+            agent_id=agent.id,
+        )
+
         # 创建 AgentLoop
         agent_loop = AgentLoop(
             provider=provider,
@@ -247,6 +259,8 @@ async def execute_agent(
             max_tokens=model_config.max_tokens,
             agent_config=agent.config or {},
             user_role=current_user.role,
+            context_pruner=context_pruner,
+            compactor=compactor,
         )
 
         # Stage VV: 注入 post-turn 服务
@@ -368,7 +382,19 @@ async def execute_agent_stream(
     
     # 创建 LLM Provider
     provider = SimpleLLMProvider(config=model_config)
-    
+
+    # Context 压缩组件（Phase 1）
+    from app.modules.agent.context_pruner import ContextPruner
+    from app.modules.agent.compactor import Compactor, CompactionConfig
+    context_pruner = ContextPruner()
+    compactor = Compactor(
+        config=CompactionConfig(),
+        llm_client=provider,
+        user_id=current_user.id,
+        session_id=f"stream_{agent_id}_{int(time.time())}",
+        agent_id=agent.id,
+    )
+
     # 创建取消令牌
     cancel_token = CancelToken()
     _active_cancellations[agent_id] = cancel_token
@@ -381,6 +407,8 @@ async def execute_agent_stream(
         max_iterations=agent.max_iterations or 25,
         temperature=model_config.temperature,
         max_tokens=model_config.max_tokens,
+        context_pruner=context_pruner,
+        compactor=compactor,
     )
 
     # Stage VV: 注入 post-turn 服务

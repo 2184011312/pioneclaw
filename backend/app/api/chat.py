@@ -302,6 +302,8 @@ async def react_chat(
     from app.modules.agent import AgentLoop
     from app.modules.tools import ToolRegistry, register_builtin_tools
     from app.modules.agent.context import ContextBuilder, PersonaConfig
+    from app.modules.agent.context_pruner import ContextPruner
+    from app.modules.agent.compactor import Compactor, CompactionConfig
     from pathlib import Path
 
     # 创建工具注册表
@@ -329,6 +331,15 @@ async def react_chat(
     # 创建 LLM Provider
     provider = SimpleLLMProvider(config=config)
 
+    # Context 压缩组件（Phase 1）
+    context_pruner = ContextPruner()
+    compactor = Compactor(
+        config=CompactionConfig(),
+        llm_client=provider,
+        user_id=current_user.id,
+        session_id=request.session_id,
+    )
+
     # 创建 AgentLoop
     agent_loop = AgentLoop(
         provider=provider,
@@ -340,6 +351,8 @@ async def react_chat(
         max_tokens=config.max_tokens,
         session_id=request.session_id,
         user_role=current_user.role,
+        context_pruner=context_pruner,
+        compactor=compactor,
     )
 
     # 执行
@@ -472,6 +485,8 @@ async def react_chat_stream(
 
     # 用 ContextBuilder 构建完整系统提示词
     from app.models import Workspace
+    from app.modules.agent.context_pruner import ContextPruner as CP
+    from app.modules.agent.compactor import Compactor as C, CompactionConfig as CC
     ws_result = await db.execute(
         select(Workspace).where(Workspace.owner_id == current_user.id, Workspace.is_default == True)
     )
@@ -485,6 +500,16 @@ async def react_chat_stream(
 
     provider = SimpleLLMProvider(config=config)
     provider.fast_mode = request.fast_mode
+
+    # Context 压缩组件（Phase 1）
+    context_pruner = CP()
+    compactor = C(
+        config=CC(),
+        llm_client=provider,
+        user_id=current_user.id,
+        session_id=request.session_id,
+    )
+
     agent_loop = AgentLoop(
         provider=provider,
         tools=tool_registry,
@@ -495,6 +520,8 @@ async def react_chat_stream(
         max_tokens=config.max_tokens,
         session_id=request.session_id,
         user_role=current_user.role,
+        context_pruner=context_pruner,
+        compactor=compactor,
     )
 
     thinking_pattern = re.compile(r'<!--THINKING:(.*?)-->', re.DOTALL)

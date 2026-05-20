@@ -250,28 +250,11 @@ class ContextBuilder:
             return ""
     
     def _build_memory_section(self) -> str:
-        """构建记忆部分（优先使用 MemoryOrchestrator 语义检索）"""
-        # 优先使用分层记忆语义检索
-        if self.memory_orchestrator:
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # 在已有事件循环中，无法直接 await，使用缓存的 L0 工作记忆
-                    return self._build_memory_section_from_orchestrator_sync()
-                else:
-                    result = loop.run_until_complete(
-                        self.memory_orchestrator.recall(
-                            query="当前对话上下文",
-                            layers=[1, 2],
-                            top_k=15,
-                        )
-                    )
-                    return self._format_orchestrator_results(result)
-            except Exception as e:
-                logger.warning(f"MemoryOrchestrator recall failed, falling back: {e}")
+        """构建记忆部分（同步方式，使用传统 memory_store）
 
-        # 降级：使用传统 memory_store
+        MemoryOrchestrator 语义检索通过 async 路径完成。
+        此方法仅使用同步可用的 memory_store 作为降级方案。
+        """
         if not self.memory_store:
             return ""
 
@@ -284,16 +267,12 @@ class ContextBuilder:
 
 以下是最近的记忆条目，可参考但不必主动提及：
 
-{recent}"""
+{recent}
+
+**注意**: 记忆是某个时间点的快照，可能已过时。在基于记忆采取行动前，先验证其是否仍然正确。"""
         except Exception as e:
             logger.warning(f"Failed to build memory section: {e}")
             return ""
-
-    def _build_memory_section_from_orchestrator_sync(self) -> str:
-        """同步方式构建记忆（使用 L0 工作记忆缓存）"""
-        # 当在已有事件循环中时，无法 await
-        # 返回空，让调用方在异步上下文中使用 recall
-        return ""
 
     def _format_orchestrator_results(self, result: dict) -> str:
         """格式化 MemoryOrchestrator 检索结果"""
@@ -330,7 +309,20 @@ class ContextBuilder:
 1. **够用就停**: web_search 摘要能回答问题就直接回答，不要追加 web_fetch。只做必要的操作，不过度工程
 2. **本轮必须行动**: 任务没完成就调工具推进，不要只输出计划
 3. **失败换方式**: 工具报错→换关键词/URL/参数重试，不要放弃也不要报告"被限制"
-4. **禁止空话**: 不说"让我试试"、"我换个方式"而不调工具。说了就立刻做
+4. **完成前验证**: 声称完成前必须用工具验证。写代码后运行测试，改配置后读取确认。不做假设
+5. **如实报告**: 工具返回什么就说什么。测试失败就说失败，不要编造成功
+
+## 深度负责模式
+
+- **主动探索**: 禁止说"请提供…"、"建议手动…"。信息不足时先用工具查证，
+  只有所有路径堵死时才提问
+- **失败反思**: 方案连续失败≥2次，严禁微调参数重试。必须推翻当前假设，
+  切换完全不同的技术路径（如从"配置错"转为"环境脏"，从"代码逻辑"转为"并发竞争"）
+- **内在思维**: 遇到阻碍时自动执行：
+  质疑直觉（基于事实还是猜测？）→ 查文档原文、读报错全文、看源码上下文
+  反转假设（如果我认为对的其实是错的？）→ 构建最小反例证伪
+  扩大边界（用户没说的部分会不会炸？）→ 检查边缘情况、并发场景、依赖版本
+- **完整交付**: 解决问题后验证：检查结果、检查日志、扫描相似隐患
 
 ## 工具使用策略
 
@@ -343,10 +335,11 @@ class ContextBuilder:
 - 先给结论，再补充细节。不要写长篇论文
 - 错误处理：直接说原因，不用"抱歉"、"遗憾"等修饰语
 
-## 输出效率
-- 直奔重点，先给答案再补细节。一句话说清就不用三句
+## 输出标准
+- 直奔重点，先给结论再补细节。一句话说清就不用三句
 - 不要重复用户说的话，直接做
 - 不用 emoji。不用"让我读一下文件:"后跟工具调用——用句号结尾
+- 工具结果完整性：用工具拿到数据后，回复要带关键信息，不只说"已查询"
 
 ## 文件操作
 1. 修改前必须先 Read；优先用 Edit（只传 diff），新建文件才用 Write
@@ -388,6 +381,15 @@ class ContextBuilder:
             "NEVER invent data. Paths, filenames, IPs, PIDs, config values must come from actual tool output.",
             "If you did not call a tool, your reply cannot imply you performed any action.",
             "When unsure, say you need to check, then call a tool. Or say you do not have that information.",
+            "",
+            "## Anti-False-Claims (CRITICAL)",
+            "NEVER claim tests pass when output shows failures.",
+            "NEVER claim a file was modified without actually calling write_file or edit_file.",
+            "NEVER claim code was written, a command was run, or a search was performed unless the tool was actually called.",
+            "If a tool returned an error, report the error - do not pretend it succeeded.",
+            "When in doubt, call a verification tool (read_file, grep, exec) before making a factual claim.",
+            "Before reporting a task complete, verify it actually works: run the test, execute the script, check the output.",
+            "If you cannot verify (no test exists, cannot run the code), say so explicitly rather than claiming success.",
         ])
 
     

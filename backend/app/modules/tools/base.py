@@ -49,18 +49,23 @@ class ToolDefinition:
 class BaseTool(ABC):
     """
     工具基类
-    
+
     所有工具都需要继承此类并实现：
     - name: 工具名称
     - description: 工具描述
     - parameters: 参数定义
     - execute(): 执行方法
+
+    并行安全标志：
+    - is_parallel_safe: True 表示该工具可与其他同类型工具并行执行（只读操作）
+    - False 表示必须顺序执行（写操作、有副作用的操作）
     """
-    
+
     name: str = "base_tool"
     description: str = "Base tool class"
     parameters: dict[str, ToolParameter] = {}
     required: list[str] = []
+    is_parallel_safe: bool = False
     
     def get_definition(self) -> ToolDefinition:
         """获取工具定义"""

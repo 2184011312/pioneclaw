@@ -91,6 +91,7 @@ class BraveSearchTool(BaseTool):
     """Brave Search API 搜索工具（首选）"""
 
     name = "brave_search"
+    is_parallel_safe = True
     description = "使用 Brave Search API 搜索网络（需要 API Key）"
     parameters = {
         "query": ToolParameter(type="string", description="搜索关键词"),
@@ -154,6 +155,7 @@ class DuckDuckGoSearchTool(BaseTool):
     """DuckDuckGo 搜索工具（备选，免费无需 API Key）"""
 
     name = "duckduckgo_search"
+    is_parallel_safe = True
     description = "使用 DuckDuckGo 搜索网络（免费，无需 API Key）"
     parameters = {
         "query": ToolParameter(type="string", description="搜索关键词"),
@@ -292,6 +294,7 @@ class BingSearchTool(BaseTool):
     """Bing 搜索工具（备选，全球可用）"""
 
     name = "bing_search"
+    is_parallel_safe = True
     description = "使用 Bing 搜索网络"
     parameters = {
         "query": ToolParameter(type="string", description="搜索关键词"),
@@ -406,6 +409,7 @@ class SogouSearchTool(BaseTool):
     """搜狗搜索工具（中文搜索首选，无需 API Key）"""
 
     name = "sogou_search"
+    is_parallel_safe = True
     description = "使用搜狗搜索网络（中文搜索首选）"
     parameters = {
         "query": ToolParameter(type="string", description="搜索关键词"),
@@ -554,6 +558,7 @@ class WebSearchTool(BaseTool):
     """
 
     name = "web_search"
+    is_parallel_safe = True
     description = "搜索网络获取最新信息。返回标题、URL 和摘要。搜索摘要通常已包含足够信息，直接基于摘要回答即可，无需额外调用 web_fetch。如需最新年份的数据，请在 query 中包含当前年份。回答时必须标注信息来源"
     parameters = {
         "query": ToolParameter(
@@ -662,6 +667,7 @@ class WebFetchTool(BaseTool):
     """Web 内容获取工具（含安全防护 + 缓存）"""
 
     name = "web_fetch"
+    is_parallel_safe = True
     description = "获取指定网页内容并提取相关信息。仅在 web_search 摘要确实不足以回答问题时使用。需要提供 prompt 说明你想从页面中提取什么信息。注意：认证页面会失败；中国新闻/政府网站经常拦截"
     parameters = {
         "url": ToolParameter(
