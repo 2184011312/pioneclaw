@@ -136,6 +136,7 @@ async def run_pipeline(
         from app.api.chat import SimpleLLMProvider
         provider = SimpleLLMProvider(config=config)
         
+        from app.core.security_client import security_client
         agent_loop = AgentLoop(
             provider=provider,
             tools=tool_registry,
@@ -144,6 +145,7 @@ async def run_pipeline(
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             user_role=current_user.role,
+            security_client=security_client,
         )
         
         # 创建 WorkflowEngine
@@ -202,6 +204,7 @@ async def run_graph(
         from app.api.chat import SimpleLLMProvider
         provider = SimpleLLMProvider(config=config)
         
+        from app.core.security_client import security_client
         agent_loop = AgentLoop(
             provider=provider,
             tools=tool_registry,
@@ -210,6 +213,7 @@ async def run_graph(
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             user_role=current_user.role,
+            security_client=security_client,
         )
         
         # 创建 WorkflowEngine
@@ -268,6 +272,7 @@ async def run_council(
         from app.api.chat import SimpleLLMProvider
         provider = SimpleLLMProvider(config=config)
         
+        from app.core.security_client import security_client
         agent_loop = AgentLoop(
             provider=provider,
             tools=tool_registry,
@@ -276,6 +281,7 @@ async def run_council(
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             user_role=current_user.role,
+            security_client=security_client,
         )
         
         # 创建 WorkflowEngine

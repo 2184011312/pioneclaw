@@ -105,6 +105,12 @@ const routes: RouteRecordRaw[] = [
         name: 'SystemOps',
         component: () => import('@/views/SystemOps.vue'),
         meta: { title: 'System Operations', icon: 'Setting', group: 'admin', roles: ['super_admin'] }
+      },
+      {
+        path: 'security-gateway',
+        name: 'SecurityGateway',
+        component: () => import('@/views/SecurityGateway.vue'),
+        meta: { title: 'Security Gateway', icon: 'Lock', group: 'admin', roles: ['super_admin'] }
       }
     ]
   }

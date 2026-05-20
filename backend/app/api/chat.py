@@ -372,6 +372,26 @@ async def react_chat(
         file_tracker=file_tracker,
     )
 
+    # 安全网关：pre_input_call 输入过滤
+    from app.core.security_client import security_client, apply_input_filter
+    filtered_text, error = await apply_input_filter(
+        security_client,
+        request.message,
+        context={
+            "user_id": current_user.id,
+            "username": current_user.username,
+            "session_id": request.session_id,
+        }
+    )
+    if error:
+        return ReActResponse(
+            success=error["success"],
+            message=error["message"],
+            latency_ms=error["latency_ms"],
+        )
+    if filtered_text != request.message:
+        request.message = filtered_text
+
     # 创建 AgentLoop
     agent_loop = AgentLoop(
         provider=provider,
@@ -387,6 +407,7 @@ async def react_chat(
         context_pruner=context_pruner,
         compactor=compactor,
         compression_service=compression_service,
+        security_client=security_client,
     )
 
     # 执行

@@ -178,6 +178,7 @@ class AgentLoop:
         context_pruner: Optional[Any] = None,  # ContextPruner 实例（Microcompact + Snip）
         compression_service: Optional[Any] = None,  # ContextCompressionService 统一入口
         file_tracker: Optional[Any] = None,  # FileTracker 实例（Phase 6: 压缩后文件恢复）
+        security_client: Optional[Any] = None,  # 安全网关 HTTP Client
     ):
         """
         初始化 AgentLoop
@@ -239,6 +240,34 @@ class AgentLoop:
 
         # Tool Hooks 拦截（借鉴 PraisonAI）
         self._tool_hooks = tool_hooks or ToolHookRunner()
+
+        # 安全网关 ToolHook 注册（pre_tool_call）
+        self._security_client = security_client
+        if security_client:
+            from app.modules.agent.tool_hooks import ToolHook, HookEvent, HookContext, HookResult
+
+            async def _security_tool_hook(ctx: HookContext) -> HookResult:
+                result = await security_client.check_tool(
+                    ctx.tool_name,
+                    ctx.tool_args,
+                    context={
+                        "agent_id": ctx.agent_id,
+                        "agent_name": ctx.agent_name,
+                        "conversation_id": ctx.conversation_id,
+                    }
+                )
+                if result.action == "block":
+                    return HookResult(
+                        skip_execution=True,
+                        modified_result=f"Error: 安全拦截 - {result.reason}",
+                    )
+                return HookResult()
+
+            self._tool_hooks.register(ToolHook(
+                event=HookEvent.BEFORE_TOOL,
+                callback=_security_tool_hook,
+                priority=0,  # 最高优先级
+            ))
 
         # 中断与恢复机制（借鉴 LangGraph）
         self._interrupt_manager = interrupt_manager or get_interrupt_manager()
@@ -569,7 +598,28 @@ class AgentLoop:
 
                 # 将聚合后的 tool_calls 转换为列表
                 tool_calls_buffer = list(tool_calls_aggregate.values())
-                
+
+                # 安全网关：post_llm_call 输出过滤
+                if self._security_client and content_buffer:
+                    try:
+                        sg_context = {
+                            "agent_id": self._agent_id,
+                            "agent_name": self._agent_name,
+                            "session_id": self.session_id,
+                            "request_trace_id": self.request_trace_id,
+                        }
+                        result = await self._security_client.filter_output(content_buffer, sg_context)
+                        if result.action == "block":
+                            yield f"\n\n[安全拦截] {result.reason or '模型输出被安全策略拦截'}"
+                            return
+                        elif result.action == "sanitize" and result.content is not None:
+                            content_buffer = result.content
+                            if yield_intermediate:
+                                # 通知前端输出被修改
+                                yield f"\n<!--SECURITY:输出已脱敏-->\n"
+                    except Exception as e:
+                        logger.error(f"Security client filter_output failed: {e}")
+
                 iter_latency = int((time.time() - iter_start) * 1000)
                 
                 # 记录本次迭代

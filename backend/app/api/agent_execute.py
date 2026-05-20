@@ -260,6 +260,27 @@ async def execute_agent(
             file_tracker=file_tracker,
         )
 
+        # 安全网关：pre_input_call 输入过滤
+        from app.core.security_client import security_client, apply_input_filter
+        filtered_text, error = await apply_input_filter(
+            security_client,
+            request.message,
+            context={
+                "user_id": current_user.id,
+                "username": current_user.username,
+                "agent_id": str(agent.id),
+            }
+        )
+        if error:
+            return AgentExecuteResponse(
+                success=error["success"],
+                message=error["message"],
+                agent_id=agent_id,
+                latency_ms=error["latency_ms"],
+            )
+        if filtered_text != request.message:
+            request.message = filtered_text
+
         # 创建 AgentLoop
         agent_loop = AgentLoop(
             provider=provider,
@@ -274,6 +295,7 @@ async def execute_agent(
             context_pruner=context_pruner,
             compactor=compactor,
             compression_service=compression_service,
+            security_client=security_client,
         )
 
         # Stage VV: 注入 post-turn 服务

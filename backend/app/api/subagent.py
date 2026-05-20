@@ -163,6 +163,7 @@ async def get_subagent_manager(
     from app.api.chat import SimpleLLMProvider
     provider = SimpleLLMProvider(config=config)
     
+    from app.core.security_client import security_client
     agent_loop = AgentLoop(
         provider=provider,
         tools=tool_registry,
@@ -171,6 +172,7 @@ async def get_subagent_manager(
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         user_role=current_user.role,
+        security_client=security_client,
     )
     
     # 创建 SubagentManager

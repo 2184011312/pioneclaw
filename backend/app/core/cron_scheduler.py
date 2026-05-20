@@ -464,11 +464,13 @@ def _make_cron_callback(job_name: str, config: dict):
             tool_registry = ToolRegistry()
             register_builtin_tools(tool_registry)
 
+            from app.core.security_client import security_client
             agent_loop = AgentLoop(
                 provider=provider,
                 tools=tool_registry,
                 model=provider_config.model_name,
                 max_iterations=5,
+                security_client=security_client,
             )
             result = await agent_loop.process_direct(message=prompt)
             return result

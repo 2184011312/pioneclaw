@@ -1786,6 +1786,7 @@ class RunBackgroundTool(BaseTool):
 
                     provider = SimpleLLMProvider(config=config)
 
+                    from app.core.security_client import security_client
                     sub_agent = AgentLoop(
                         provider=provider,
                         tools=agent_tool_registry,
@@ -1795,6 +1796,7 @@ class RunBackgroundTool(BaseTool):
                         max_tokens=config.max_tokens,
                         permission_mode="prompt",
                         inbox_queue=inbox,
+                        security_client=security_client,
                     )
 
                     _background_tasks[task_id]["status"] = "running"
@@ -2389,6 +2391,7 @@ class SpawnTool(BaseTool):
             from app.api.chat import SimpleLLMProvider
             provider = SimpleLLMProvider(config=config)
 
+            from app.core.security_client import security_client
             sub_agent = AgentLoop(
                 provider=provider,
                 tools=tool_registry,
@@ -2397,6 +2400,7 @@ class SpawnTool(BaseTool):
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
                 permission_mode="prompt",  # 子 Agent 使用 Prompt 模式，自动审批
+                security_client=security_client,
             )
 
             full_task = task
