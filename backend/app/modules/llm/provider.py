@@ -12,6 +12,11 @@ from app.models import AIModelConfig
 logger = logging.getLogger(__name__)
 
 
+class PromptTooLongError(Exception):
+    """上下文过长错误 — 触发应急压缩"""
+    pass
+
+
 class SimpleLLMProvider:
     """LLM Provider — 直接使用 AIModelConfig 调用 API"""
 

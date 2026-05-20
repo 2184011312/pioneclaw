@@ -35,53 +35,62 @@ class TestMicroCompacter:
 
     def test_keeps_recent_n_results(self):
         compacter = MicroCompacter(keep_recent=2, max_chars=9999)
-        messages = [
+        original = [
             self._tool_result("read_file", f"File content {i}" * 50, idx=i)
             for i in range(5)
         ]
-        result, saved = compacter.prune(messages)
+        result, saved = compacter.prune(original)
+
+        # 返回新列表，不修改原列表
+        assert result is not original
+        assert original[0]["content"] == "File content 0" * 50  # unchanged
 
         # 最早 3 个被清除
         for i in range(3):
-            assert messages[i]["content"] == CLEAR_PLACEHOLDER
+            assert result[i]["content"] == "[tool_result: read_file, content cleared]"
         # 最近 2 个保留
         for i in range(3, 5):
-            assert messages[i]["content"] == f"File content {i}" * 50
+            assert result[i]["content"] == f"File content {i}" * 50
 
         assert saved > 0
-        assert result is messages  # in-place
 
     def test_clears_old_results_by_count(self):
         compacter = MicroCompacter(keep_recent=8, max_chars=9999)
-        messages = [
-            self._tool_result("grep", f"result {i}", idx=i)
+        # 使用足够长的内容，确保占位符比内容短
+        original = [
+            self._tool_result("grep", f"result {i}" + "x" * 100, idx=i)
             for i in range(15)
         ]
-        compacter.prune(messages)
+        result, saved = compacter.prune(original)
 
-        cleared = sum(1 for m in messages if m["content"] == CLEAR_PLACEHOLDER)
+        # 长内容使用结构化占位符
+        cleared = sum(1 for m in result if m["content"] == "[tool_result: grep, content cleared]")
         assert cleared == 7  # 15 - 8 = 7
+        assert saved > 0
 
     def test_truncates_oversized_results(self):
         compacter = MicroCompacter(keep_recent=10, max_chars=50)
         long_content = "X" * 200
         messages = [self._tool_result("read_file", long_content, idx=0)]
-        compacter.prune(messages)
+        result, _ = compacter.prune(messages)
 
-        assert messages[0]["content"] != long_content
-        assert "truncated" in messages[0]["content"].lower()
-        assert len(messages[0]["content"]) < len(long_content)
+        assert result[0]["content"] != long_content
+        assert "truncated" in result[0]["content"].lower()
+        assert len(result[0]["content"]) < len(long_content)
+        assert messages[0]["content"] == long_content  # original unchanged
 
     def test_does_not_touch_non_compactable_tools(self):
         compacter = MicroCompacter(keep_recent=0, max_chars=9999)
-        messages = [
+        original = [
             {"role": "tool", "tool_name": "custom_tool", "content": "should stay"},
-            {"role": "tool", "tool_name": "read_file", "content": "will be cleared"},
+            {"role": "tool", "tool_name": "read_file", "content": "will be cleared" + "x" * 100},
         ]
-        compacter.prune(messages)
+        result, _ = compacter.prune(original)
 
-        assert messages[0]["content"] == "should stay"
-        assert messages[1]["content"] == CLEAR_PLACEHOLDER
+        assert result[0]["content"] == "should stay"
+        # 长内容使用结构化占位符
+        assert result[1]["content"] == "[tool_result: read_file, content cleared]"
+        assert original[1]["content"] == "will be cleared" + "x" * 100  # original unchanged
 
     def test_does_not_touch_non_tool_roles(self):
         compacter = MicroCompacter(keep_recent=0, max_chars=9999)
@@ -229,7 +238,7 @@ class TestContextPruner:
 
         # Verify old tool results cleared
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
-        cleared_count = sum(1 for m in tool_msgs if m["content"] == CLEAR_PLACEHOLDER)
+        cleared_count = sum(1 for m in tool_msgs if "content cleared" in m["content"])
         assert cleared_count >= 3  # at least 3 cleared (5 total - 2 kept)
 
     def test_pruner_with_no_prunable_content(self):

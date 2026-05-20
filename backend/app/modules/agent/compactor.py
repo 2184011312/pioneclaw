@@ -232,6 +232,10 @@ class Compactor:
 
         # 当前摘要（递归总结用）
         self._current_summary: Optional[str] = None
+
+        # 熔断器：连续失败次数
+        self._consecutive_failures: int = 0
+        self.MAX_CONSECUTIVE_FAILURES: int = 3
     
     def should_compact(
         self,
@@ -275,18 +279,22 @@ class Compactor:
         self,
         messages: List[dict],
         existing_summary: Optional[str] = None,
+        instruction: Optional[str] = None,
+        force: bool = False,
     ) -> CompactionResult:
         """
         压缩对话历史
-        
+
         Args:
             messages: 消息列表
             existing_summary: 已有的摘要（用于递归总结）
-            
+            instruction: 用户自定义压缩指令（如"重点保留 API 设计"）
+            force: 是否强制压缩（忽略 should_compact 阈值，用于手动压缩）
+
         Returns:
             CompactionResult: 压缩结果
         """
-        if not self.should_compact(messages):
+        if not force and not self.should_compact(messages):
             return CompactionResult(
                 summary="",
                 removed_messages=0,
@@ -308,31 +316,69 @@ class Compactor:
         # 估算节省的 Token
         saved_tokens = self._estimate_tokens(to_summarize)
         
-        # 生成摘要
-        summary = await self._generate_summary(
-            to_summarize,
-            existing_summary or self._current_summary,
-        )
-        
-        # 更新当前摘要
-        self._current_summary = summary
-        
-        # 生成记忆条目
-        memory_entries = []
-        if self.config.generate_memory:
-            memory_entries = await self._generate_memory_entries(to_summarize)
+        # 熔断器检查
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            logger.warning(
+                f"Compactor circuit breaker open ({self._consecutive_failures} "
+                f"consecutive failures), skipping compaction"
+            )
+            return CompactionResult(
+                summary="",
+                removed_messages=0,
+                kept_messages=len(messages),
+                saved_tokens=0,
+            )
 
-            # 将记忆条目写入 L1（如果 MemoryOrchestrator 可用）
-            if self.memory_orchestrator and memory_entries:
-                await self._write_memories_to_l1(memory_entries)
+        try:
+            # 生成摘要
+            summary = await self._generate_summary(
+                to_summarize,
+                existing_summary or self._current_summary,
+                instruction=instruction,
+            )
 
-        return CompactionResult(
-            summary=summary,
-            removed_messages=len(to_summarize),
-            kept_messages=len(to_keep),
-            saved_tokens=saved_tokens,
-            memory_entries=memory_entries,
-        )
+            # 空摘要保护：摘要为空 = 压缩失败，不丢弃历史
+            if not summary or not summary.strip():
+                logger.warning("Compaction failed: empty summary, preserving original messages")
+                self._consecutive_failures += 1
+                return CompactionResult(
+                    summary="",
+                    removed_messages=0,
+                    kept_messages=len(messages),
+                    saved_tokens=0,
+                )
+
+            # 成功，重置失败计数
+            self._consecutive_failures = 0
+
+            # 更新当前摘要
+            self._current_summary = summary
+
+            # 生成记忆条目
+            memory_entries = []
+            if self.config.generate_memory:
+                memory_entries = await self._generate_memory_entries(to_summarize)
+
+                # 将记忆条目写入 L1（如果 MemoryOrchestrator 可用）
+                if self.memory_orchestrator and memory_entries:
+                    await self._write_memories_to_l1(memory_entries)
+
+            return CompactionResult(
+                summary=summary,
+                removed_messages=len(to_summarize),
+                kept_messages=len(to_keep),
+                saved_tokens=saved_tokens,
+                memory_entries=memory_entries,
+            )
+        except Exception as e:
+            logger.error(f"Compaction failed: {e}, preserving original messages")
+            self._consecutive_failures += 1
+            return CompactionResult(
+                summary="",
+                removed_messages=0,
+                kept_messages=len(messages),
+                saved_tokens=0,
+            )
     
     def _split_messages(
         self,
@@ -340,28 +386,33 @@ class Compactor:
     ) -> Tuple[List[dict], List[dict]]:
         """分割消息：要总结的和要保留的"""
         keep_recent = self.config.keep_recent_messages
-        
+
         if len(messages) <= keep_recent:
             return [], messages
-        
-        to_summarize = messages[:-keep_recent]
-        to_keep = messages[-keep_recent:]
-        
+
+        if keep_recent == 0:
+            to_summarize = messages
+            to_keep = []
+        else:
+            to_summarize = messages[:-keep_recent]
+            to_keep = messages[-keep_recent:]
+
         return to_summarize, to_keep
     
     async def _generate_summary(
         self,
         messages: List[dict],
         existing_summary: Optional[str] = None,
+        instruction: Optional[str] = None,
     ) -> str:
         """生成摘要"""
         if not self.llm_client:
             # 无 LLM 客户端，返回简单统计
             return self._generate_simple_summary(messages)
-        
+
         # 格式化消息
         formatted_messages = self._format_messages(messages)
-        
+
         try:
             if existing_summary and self.config.use_recursive_summary:
                 # 递归总结
@@ -376,11 +427,15 @@ class Compactor:
                     messages=formatted_messages,
                     char_limit=self.config.max_summary_chars,
                 )
-            
+
+            # 注入用户自定义压缩指令
+            if instruction:
+                prompt += f"\n\n## 用户自定义要求\n{instruction}\n"
+
             # 调用 LLM
             response = await self._call_llm(prompt)
             return response.strip()
-            
+
         except Exception as e:
             logger.error(f"Failed to generate summary: {e}")
             return self._generate_simple_summary(messages)
@@ -430,51 +485,89 @@ class Compactor:
             logger.warning(f"Failed to write memories to L1: {e}")
 
     async def _call_llm(self, prompt: str) -> str:
-        """调用 LLM"""
+        """调用 LLM
+
+        支持多种 LLM 客户端接口：
+        - chat(messages) -> dict: 标准非流式接口
+        - complete(prompt) -> str: 简化接口
+        - chat_stream(messages) -> AsyncIterator[dict]: 流式接口（自动聚合）
+        """
         if not self.llm_client:
             return ""
-        
-        # 这里需要根据实际的 LLM 客户端接口调整
-        # 假设 llm_client 有 chat 方法
+
         try:
+            # 1. 标准非流式 chat 接口
             if hasattr(self.llm_client, 'chat'):
                 response = await self.llm_client.chat([{"role": "user", "content": prompt}])
-                return response.get("content", "")
+                if isinstance(response, dict):
+                    return response.get("content", "")
+                return str(response)
+
+            # 2. 简化 complete 接口
             elif hasattr(self.llm_client, 'complete'):
                 response = await self.llm_client.complete(prompt)
-                return response
+                return str(response)
+
+            # 3. 流式 chat_stream 接口（如 SimpleLLMProvider）— 聚合所有 chunk
+            elif hasattr(self.llm_client, 'chat_stream'):
+                content_parts = []
+                async for chunk in self.llm_client.chat_stream([{"role": "user", "content": prompt}]):
+                    if isinstance(chunk, dict):
+                        if chunk.get("error"):
+                            logger.error(f"LLM stream error: {chunk['error']}")
+                            return ""
+                        if chunk.get("content"):
+                            content_parts.append(chunk["content"])
+                    else:
+                        content_parts.append(str(chunk))
+                return "".join(content_parts)
+
             else:
+                logger.warning(f"LLM client has no supported interface: {type(self.llm_client).__name__}")
                 return ""
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
             return ""
     
     def _format_messages(self, messages: List[dict]) -> str:
-        """格式化消息为文本"""
+        """格式化消息为文本（压缩前调用）
+
+        处理多模态内容：将图片/文档替换为占位符，避免压缩请求本身过大。
+        """
         lines = []
         for msg in messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
-            
+
             if isinstance(content, list):
-                content = " ".join(
-                    part.get("text", "") if isinstance(part, dict) else str(part)
-                    for part in content
-                )
-            
+                # 多模态内容：图片/文档替换为占位符
+                parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        part_type = part.get("type", "")
+                        if part_type == "image":
+                            parts.append("[image]")
+                        elif part_type == "document":
+                            parts.append("[document]")
+                        else:
+                            parts.append(part.get("text", ""))
+                    else:
+                        parts.append(str(part))
+                content = " ".join(parts)
+
             content = str(content).strip()
             if len(content) > 500:
                 content = content[:500] + "..."
-            
+
             role_label = {
                 "user": "用户",
                 "assistant": "助手",
                 "system": "系统",
                 "tool": "工具",
             }.get(role, role)
-            
+
             lines.append(f"[{role_label}]: {content}")
-        
+
         return "\n".join(lines)
     
     def _generate_simple_summary(self, messages: List[dict]) -> str:

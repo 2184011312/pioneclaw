@@ -237,9 +237,11 @@ async def execute_agent(
         # 创建 LLM Provider（简化版，直接使用配置）
         provider = SimpleLLMProvider(config=model_config)
 
-        # Context 压缩组件（Phase 1）
+        # Context 压缩组件（Phase 1: 统一入口）
         from app.modules.agent.context_pruner import ContextPruner
         from app.modules.agent.compactor import Compactor, CompactionConfig
+        from app.modules.agent.token_budget import TokenBudget
+        from app.modules.agent.compression_service import ContextCompressionService
         context_pruner = ContextPruner()
         compactor = Compactor(
             config=CompactionConfig(context_window=model_config.context_window),
@@ -247,6 +249,15 @@ async def execute_agent(
             user_id=current_user.id,
             session_id=str(execution.id),
             agent_id=agent.id,
+        )
+        token_budget = TokenBudget(context_window=model_config.context_window)
+        from app.modules.agent.file_tracker import FileTracker
+        file_tracker = FileTracker(max_files=5, max_tokens=50_000)
+        compression_service = ContextCompressionService(
+            budget=token_budget,
+            compactor=compactor,
+            context_pruner=context_pruner,
+            file_tracker=file_tracker,
         )
 
         # 创建 AgentLoop
@@ -257,10 +268,12 @@ async def execute_agent(
             max_iterations=agent.max_turns or 25,
             temperature=model_config.temperature,
             max_tokens=model_config.max_tokens,
+            file_tracker=file_tracker,
             agent_config=agent.config or {},
             user_role=current_user.role,
             context_pruner=context_pruner,
             compactor=compactor,
+            compression_service=compression_service,
         )
 
         # Stage VV: 注入 post-turn 服务
@@ -383,9 +396,11 @@ async def execute_agent_stream(
     # 创建 LLM Provider
     provider = SimpleLLMProvider(config=model_config)
 
-    # Context 压缩组件（Phase 1）
+    # Context 压缩组件（Phase 1: 统一入口）
     from app.modules.agent.context_pruner import ContextPruner
     from app.modules.agent.compactor import Compactor, CompactionConfig
+    from app.modules.agent.token_budget import TokenBudget
+    from app.modules.agent.compression_service import ContextCompressionService
     context_pruner = ContextPruner()
     compactor = Compactor(
         config=CompactionConfig(context_window=model_config.context_window),
@@ -394,21 +409,32 @@ async def execute_agent_stream(
         session_id=f"stream_{agent_id}_{int(time.time())}",
         agent_id=agent.id,
     )
+    token_budget = TokenBudget(context_window=model_config.context_window)
+    from app.modules.agent.file_tracker import FileTracker
+    file_tracker = FileTracker(max_files=5, max_tokens=50_000)
+    compression_service = ContextCompressionService(
+        budget=token_budget,
+        compactor=compactor,
+        context_pruner=context_pruner,
+        file_tracker=file_tracker,
+    )
 
     # 创建取消令牌
     cancel_token = CancelToken()
     _active_cancellations[agent_id] = cancel_token
-    
+
     # 创建 AgentLoop
     agent_loop = AgentLoop(
         provider=provider,
         tools=tool_registry,
+        file_tracker=file_tracker,
         model=model_config.model_name,
         max_iterations=agent.max_iterations or 25,
         temperature=model_config.temperature,
         max_tokens=model_config.max_tokens,
         context_pruner=context_pruner,
         compactor=compactor,
+        compression_service=compression_service,
     )
 
     # Stage VV: 注入 post-turn 服务

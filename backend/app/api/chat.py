@@ -268,6 +268,27 @@ class ReActResponse(BaseModel):
     output_tokens: Optional[int] = None
 
 
+class CompactRequest(BaseModel):
+    """手动压缩请求"""
+    messages: List[dict]  # 当前会话消息列表
+    instruction: Optional[str] = None  # 自定义压缩指令
+    model_config_id: Optional[int] = None  # 用于选择 compactor 的 LLM
+    session_id: Optional[str] = None  # 若提供，后端会持久化压缩结果到该 session
+
+
+class CompactResponse(BaseModel):
+    """手动压缩响应"""
+    success: bool
+    summary: str
+    removed_messages: int = 0
+    kept_messages: int = 0
+    saved_tokens: int = 0
+    before_tokens: int = 0
+    after_tokens: int = 0
+    message: str = ""
+    messages: List[dict] = []  # 压缩后的消息列表，前端用于替换当前会话
+
+
 @router.post("/react", response_model=ReActResponse)
 async def react_chat(
     request: ReActRequest,
@@ -304,6 +325,8 @@ async def react_chat(
     from app.modules.agent.context import ContextBuilder, PersonaConfig
     from app.modules.agent.context_pruner import ContextPruner
     from app.modules.agent.compactor import Compactor, CompactionConfig
+    from app.modules.agent.token_budget import TokenBudget
+    from app.modules.agent.compression_service import ContextCompressionService
     from pathlib import Path
 
     # 创建工具注册表
@@ -331,13 +354,22 @@ async def react_chat(
     # 创建 LLM Provider
     provider = SimpleLLMProvider(config=config)
 
-    # Context 压缩组件（Phase 1）
+    # Context 压缩组件（Phase 1: 统一入口）
+    from app.modules.agent.file_tracker import FileTracker
+    token_budget = TokenBudget(context_window=config.context_window)
     context_pruner = ContextPruner()
+    file_tracker = FileTracker(max_files=5, max_tokens=50_000)
     compactor = Compactor(
         config=CompactionConfig(context_window=config.context_window),
         llm_client=provider,
         user_id=current_user.id,
         session_id=request.session_id,
+    )
+    compression_service = ContextCompressionService(
+        budget=token_budget,
+        compactor=compactor,
+        context_pruner=context_pruner,
+        file_tracker=file_tracker,
     )
 
     # 创建 AgentLoop
@@ -347,12 +379,14 @@ async def react_chat(
         system_prompt=system_prompt,
         model=config.model_name,
         max_iterations=request.max_iterations,
+        file_tracker=file_tracker,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         session_id=request.session_id,
         user_role=current_user.role,
         context_pruner=context_pruner,
         compactor=compactor,
+        compression_service=compression_service,
     )
 
     # 执行
@@ -501,13 +535,22 @@ async def react_chat_stream(
     provider = SimpleLLMProvider(config=config)
     provider.fast_mode = request.fast_mode
 
-    # Context 压缩组件（Phase 1）
+    # Context 压缩组件（Phase 1: 统一入口）
+    token_budget = TokenBudget(context_window=config.context_window)
     context_pruner = CP()
+    from app.modules.agent.file_tracker import FileTracker
+    file_tracker = FileTracker(max_files=5, max_tokens=50_000)
     compactor = C(
         config=CC(context_window=config.context_window),
         llm_client=provider,
         user_id=current_user.id,
         session_id=request.session_id,
+    )
+    compression_service = ContextCompressionService(
+        budget=token_budget,
+        compactor=compactor,
+        context_pruner=context_pruner,
+        file_tracker=file_tracker,
     )
 
     agent_loop = AgentLoop(
@@ -522,6 +565,8 @@ async def react_chat_stream(
         user_role=current_user.role,
         context_pruner=context_pruner,
         compactor=compactor,
+        compression_service=compression_service,
+        file_tracker=file_tracker,
     )
 
     thinking_pattern = re.compile(r'<!--THINKING:(.*?)-->', re.DOTALL)
@@ -637,13 +682,15 @@ async def react_chat_stream(
                     final_response = "已获取以下信息：\n" + "\n".join(parts[:5])
 
             # 发送完成事件
+            input_tokens = provider.last_input_tokens or 0
             done_event = {
                 'type': 'done',
                 'thinking_content': thinking_buffer if thinking_buffer else None,
                 'response': final_response or '(未获取到有效回复)',
                 'latency_ms': latency_ms,
-                'input_tokens': provider.last_input_tokens,
+                'input_tokens': input_tokens,
                 'output_tokens': provider.last_output_tokens,
+                'context_usage': token_budget.to_dict(input_tokens),
             }
             yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
 
@@ -655,6 +702,134 @@ async def react_chat_stream(
             concurrency_manager.release(current_user.id)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/compact", response_model=CompactResponse)
+async def compact_context(
+    request: CompactRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    手动压缩上下文
+
+    接收完整消息列表，返回压缩后的摘要和统计信息。
+    支持自定义压缩指令（如"重点保留 API 设计"）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # 获取模型配置
+    config = None
+    if request.model_config_id:
+        result = await db.execute(
+            select(AIModelConfig).where(AIModelConfig.id == request.model_config_id)
+        )
+        config = result.scalar_one_or_none()
+
+    if not config:
+        result = await db.execute(
+            select(AIModelConfig).where(AIModelConfig.is_default == True)
+        )
+        config = result.scalar_one_or_none()
+
+    if not config:
+        return CompactResponse(
+            success=False,
+            message="没有可用的 AI 模型配置",
+            summary="",
+        )
+
+    from app.modules.llm import SimpleLLMProvider
+    from app.modules.agent.compactor import Compactor, CompactionConfig
+    from app.modules.agent.context_pruner import ContextPruner
+    from app.modules.agent.token_budget import TokenBudget
+    from app.modules.agent.compression_service import ContextCompressionService
+
+    provider = SimpleLLMProvider(config=config)
+
+    token_budget = TokenBudget(context_window=config.context_window)
+    context_pruner = ContextPruner()
+    compactor = Compactor(
+        config=CompactionConfig(context_window=config.context_window),
+        llm_client=provider,
+        user_id=current_user.id,
+    )
+    compression_service = ContextCompressionService(
+        budget=token_budget,
+        compactor=compactor,
+        context_pruner=context_pruner,
+    )
+
+    try:
+        report, compacted_messages = await compression_service.manual_compact(
+            messages=request.messages,
+            instruction=request.instruction,
+        )
+
+        # P2: 若提供了 session_id，将压缩结果持久化到后端
+        if request.session_id:
+            await _persist_compacted_session(
+                db, request.session_id, current_user.id, compacted_messages
+            )
+
+        return CompactResponse(
+            success=True,
+            summary=report.summary,
+            removed_messages=report.removed_messages,
+            kept_messages=report.kept_messages,
+            saved_tokens=report.saved_tokens,
+            before_tokens=report.before_tokens,
+            after_tokens=report.after_tokens,
+            message="压缩完成",
+            messages=compacted_messages,
+        )
+    except Exception as e:
+        logger.error(f"Compact endpoint failed: {e}", exc_info=True)
+        return CompactResponse(
+            success=False,
+            summary="",
+            message=f"压缩失败: {str(e)}",
+            messages=request.messages,
+        )
+
+
+async def _persist_compacted_session(
+    db: AsyncSession,
+    session_id: str,
+    user_id: int,
+    messages: List[dict],
+) -> None:
+    """将压缩后的消息列表持久化到 session，替换原有消息。"""
+    from sqlalchemy import delete
+    from app.models import Session, SessionMessage
+
+    result = await db.execute(
+        select(Session).where(Session.id == session_id, Session.user_id == user_id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        return
+
+    # 删除旧消息
+    await db.execute(
+        delete(SessionMessage).where(SessionMessage.session_id == session_id)
+    )
+
+    # 写入压缩后的新消息
+    import json as _json
+    for msg in messages:
+        tool_calls = msg.get("tool_calls")
+        db_msg = SessionMessage(
+            session_id=session_id,
+            role=msg.get("role", "user"),
+            content=msg.get("content", ""),
+            tool_calls=_json.dumps(tool_calls) if tool_calls else None,
+        )
+        db.add(db_msg)
+
+    session.message_count = len(messages)
+    await db.commit()
 
 
 from app.modules.llm import SimpleLLMProvider

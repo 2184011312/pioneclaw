@@ -22,15 +22,28 @@ COMPACTABLE_TOOLS = frozenset({
 CLEAR_PLACEHOLDER = "[Old tool result content cleared]"
 
 
+def _build_tool_placeholder(tool_name: str, original_content: str) -> str:
+    """构建保留工具名等元信息的占位符。
+
+    当结构化占位符比原内容还长时，回退到简短占位符，
+    确保压缩操作始终释放空间。
+    """
+    structured = f"[tool_result: {tool_name}, content cleared]"
+    if len(structured) >= len(original_content):
+        return CLEAR_PLACEHOLDER
+    return structured
+
+
 class MicroCompacter:
     """清除旧工具结果内容以释放 context 空间。
 
     策略：
     1. 计数触发：保留最近 keep_recent 个工具结果，更早的替换为占位符
     2. 大小触发：单个工具结果超过 max_chars 时截断尾部
+    3. 占位符保留工具名等元信息（M1）
+    4. 不修改原列表，返回新列表（M3）
 
     灵感来自 Claude Code 的 microCompact.ts。
-    只修改 tool role 消息的 content，不删除消息结构。
     """
 
     def __init__(
@@ -46,14 +59,18 @@ class MicroCompacter:
     def prune(self, messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
         """裁剪旧工具结果，返回 (新消息列表, 节省的字符数)。
 
-        直接修改传入的 messages 列表（in-place），同时返回引用。
+        不修改原列表，返回深拷贝后的新列表。
         """
         if not messages:
             return messages, 0
 
+        # 深拷贝消息列表，避免修改原列表（M3）
+        import copy
+        new_messages = copy.deepcopy(messages)
+
         # 收集所有可压缩的工具结果位置
         tool_result_indices: List[Tuple[int, str, str]] = []
-        for i, msg in enumerate(messages):
+        for i, msg in enumerate(new_messages):
             if msg.get("role") != "tool":
                 continue
             tool_name = msg.get("tool_name", msg.get("name", ""))
@@ -63,7 +80,7 @@ class MicroCompacter:
 
         total_results = len(tool_result_indices)
         if total_results == 0:
-            return messages, 0
+            return new_messages, 0
 
         # 计算哪些需要清除
         chars_saved = 0
@@ -73,14 +90,17 @@ class MicroCompacter:
             # 计数触发：保留最近的 keep_recent 个
             if idx < total_results - keep_count:
                 old_len = len(content)
-                messages[msg_idx]["content"] = CLEAR_PLACEHOLDER
-                chars_saved += old_len - len(CLEAR_PLACEHOLDER)
+                placeholder = _build_tool_placeholder(tool_name, content)
+                # 只有当占位符确实更短时才替换，避免负收益
+                if len(placeholder) < old_len:
+                    new_messages[msg_idx]["content"] = placeholder
+                    chars_saved += old_len - len(placeholder)
             # 大小触发：即使保留的消息也截断超长内容
             elif len(content) > self.max_chars:
                 tail = content[-self.max_chars:]
                 old_len = len(content)
-                messages[msg_idx]["content"] = f"[Result truncated, showing last {self.max_chars} chars]\n{tail}"
-                chars_saved += old_len - len(messages[msg_idx]["content"])
+                new_messages[msg_idx]["content"] = f"[Result truncated, showing last {self.max_chars} chars]\n{tail}"
+                chars_saved += old_len - len(new_messages[msg_idx]["content"])
 
         if chars_saved > 0:
             cleared = total_results - keep_count
@@ -89,7 +109,7 @@ class MicroCompacter:
                 f"saved ~{chars_saved} chars"
             )
 
-        return messages, chars_saved
+        return new_messages, chars_saved
 
 
 class Snip:

@@ -60,6 +60,14 @@
             </el-option-group>
           </el-select>
           <template v-if="currentConversation">
+            <el-button
+              size="small"
+              :title="'压缩上下文'"
+              @click="compactContext()"
+            >
+              <el-icon><Collection /></el-icon>
+              <span class="compact-btn-text">压缩</span>
+            </el-button>
             <el-dropdown trigger="click">
               <el-button size="small" circle>
                 <el-icon><MoreFilled /></el-icon>
@@ -231,6 +239,30 @@
 
       <!-- 输入区域（类似 OpenClaw 风格） -->
       <div class="chat-input-area">
+        <!-- 上下文使用率提示 -->
+        <div v-if="contextUsageStatus && contextUsageStatus.status !== 'normal'" class="context-usage-bar">
+          <el-progress
+            :percentage="Math.round(contextUsageStatus.percent)"
+            :color="contextUsageStatus.color"
+            :stroke-width="8"
+            :show-text="true"
+            class="usage-progress"
+          />
+          <span class="usage-label" :style="{ color: contextUsageStatus.color }">
+            {{ contextUsageStatus.label }}
+            ({{ contextUsageStatus.inputTokens.toLocaleString() }} / {{ contextUsageStatus.window.toLocaleString() }} tokens)
+          </span>
+          <el-button
+            v-if="contextUsageStatus.status === 'caution' || contextUsageStatus.status === 'critical'"
+            size="small"
+            link
+            type="warning"
+            @click="compactContext()"
+          >
+            立即压缩
+          </el-button>
+        </div>
+
         <!-- 输入框 -->
         <div class="input-main">
           <el-input
@@ -291,7 +323,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, ChatLineRound, User, MoreFilled, CopyDocument, Refresh, ArrowRight, Fold, Expand, Paperclip, VideoPause, Promotion, QuestionFilled, Cpu, Tools, FolderOpened, Search, Setting, Document, Link } from '@element-plus/icons-vue'
+import { Plus, ChatLineRound, User, MoreFilled, CopyDocument, Refresh, ArrowRight, Fold, Expand, Paperclip, VideoPause, Promotion, QuestionFilled, Cpu, Tools, FolderOpened, Search, Setting, Document, Link, Collection } from '@element-plus/icons-vue'
 import { api, longApi } from '../api'
 import { useI18n } from 'vue-i18n'
 import { getAccessToken } from '@/stores/user'
@@ -474,6 +506,7 @@ function cancelCurrentTask() {
 const slashCommands = [
   { command: '/new', description: $t('chat.newChat'), action: 'new' },
   { command: '/clear', description: $t('chat.slashClear'), action: 'clear' },
+  { command: '/compact', description: '压缩上下文', action: 'compact' },
   { command: '/history', description: $t('chat.chatHistoryInSidebar'), action: 'history' },
   { command: '/model', description: $t('chat.slashModels'), action: 'model' },
   { command: '/system', description: $t('chat.slashSystem'), action: 'system' },
@@ -544,6 +577,7 @@ const sidebarCollapsed = ref(false) // 左侧栏折叠状态
 const searchKeyword = ref('')
 const reactMode = ref(false)  // 默认快速模式
 const showThinking = ref(false)  // 默认不显示思考过程
+const contextUsage = ref<any>(null)  // 上下文使用率信息
 const expandedToolCalls = ref<Set<string>>(new Set())  // 展开的工具调用
 
 // 检查当前会话是否正在加载
@@ -558,6 +592,24 @@ const streamingMsgHasContent = computed(() => {
   if (!msgs?.length) return false
   const last = msgs[msgs.length - 1]
   return last.role === 'assistant' && last.isStreaming && !!(last.thinkingContent || last.content)
+})
+
+// 上下文使用率状态（用于 UI 提示）
+const contextUsageStatus = computed(() => {
+  const u = contextUsage.value
+  if (!u) return null
+  return {
+    percent: u.usage_percent || 0,
+    status: u.status || 'normal',
+    inputTokens: u.input_tokens || 0,
+    window: u.context_window || 0,
+    label: u.status === 'critical' ? '即将自动压缩' :
+           u.status === 'caution' ? '上下文较长，可点击压缩' :
+           u.status === 'warning' ? '上下文使用率较高' : '',
+    color: u.status === 'critical' || u.status === 'block' ? '#f56c6c' :
+           u.status === 'caution' ? '#e6a23c' :
+           u.status === 'warning' ? '#409eff' : '#67c23a',
+  }
 })
 
 // 切换工具调用展开/收缩
@@ -792,9 +844,73 @@ function exportConversation() {
   URL.revokeObjectURL(url)
 }
 
+// 手动压缩上下文
+async function compactContext(instruction?: string) {
+  if (!currentConversation.value) {
+    ElMessage.warning('请先选择一个会话')
+    return
+  }
+  if (currentConversation.value.messages.length === 0) {
+    ElMessage.warning('当前会话没有消息可压缩')
+    return
+  }
+
+  const loading = ElMessage.info({ message: '正在压缩上下文...', duration: 0 })
+  try {
+    const messages = currentConversation.value.messages.map(m => ({
+      role: m.role,
+      content: m.content,
+    }))
+
+    const res = await api.post('/chat/compact', {
+      messages,
+      instruction: instruction || undefined,
+      model_config_id: selectedModelId.value,
+      session_id: currentConversation.value.sessionId || undefined,
+    })
+
+    const data = res.data
+    if (data.success) {
+      const originalCount = currentConversation.value.messages.length
+      const summaryText = data.summary || ''
+
+      // 用后端返回的压缩后消息列表替换当前会话
+      if (data.messages && data.messages.length > 0) {
+        currentConversation.value.messages = data.messages.map((m: any) => ({
+          id: Date.now() + Math.random(),
+          role: m.role,
+          content: m.content,
+          timestamp: new Date(),
+        }))
+      }
+
+      // 追加压缩统计信息作为系统消息
+      const infoText = `--- 上下文已压缩 ---\n压缩前: ${data.before_tokens?.toLocaleString() || '?'} tokens (${originalCount} 条消息)\n压缩后: ${data.after_tokens?.toLocaleString() || '?'} tokens (${data.kept_messages} 条消息)\n节省: ${data.saved_tokens?.toLocaleString() || '?'} tokens\n\n[摘要]\n${summaryText}`
+
+      currentConversation.value.messages.push({
+        id: Date.now() + Math.random(),
+        role: 'system',
+        content: infoText,
+        timestamp: new Date(),
+      })
+      saveConversations()
+      ElMessage.success(`上下文已压缩，节省 ${data.saved_tokens?.toLocaleString() || '?'} tokens`)
+    } else {
+      ElMessage.warning(data.message || '压缩失败')
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '压缩请求失败')
+  } finally {
+    loading.close()
+  }
+}
+
 // 处理斜杠命令
 function handleSlashCommand(command: string) {
-  const cmd = slashCommands.find(c => c.command === command.toLowerCase())
+  const parts = command.split(' ')
+  const cmdName = parts[0].toLowerCase()
+  const args = parts.slice(1).join(' ').trim()
+  const cmd = slashCommands.find(c => c.command === cmdName)
 
   if (!cmd) {
     ElMessage.warning($t('chat.unknownCommand', { cmd: command }))
@@ -814,6 +930,10 @@ function handleSlashCommand(command: string) {
         saveConversations()
         ElMessage.success($t('chat.chatCleared'))
       }
+      break
+
+    case 'compact':
+      compactContext(args || undefined)
       break
 
     case 'history':
@@ -922,6 +1042,14 @@ async function sendMessage() {
       // 从数组中取回响应式代理，否则 Vue 无法追踪对 plain object 的修改
       const streamingMsg = targetConversation.messages[targetConversation.messages.length - 1]
 
+      // P1: 构造 context，传入压缩后的历史消息
+      // 排除当前刚输入的 user message（后端会自己 append request.message）
+      // 和正在 streaming 的 assistant 占位消息
+      const contextMessages = targetConversation.messages
+        .slice(0, -2) // 排除最后两条：user + streaming assistant
+        .filter((m: any) => !m.isStreaming && m.role)
+        .map((m: any) => ({ role: m.role, content: m.content }))
+
       const token = getAccessToken() || localStorage.getItem('token')
       const response = await fetch('/api/chat/react/stream', {
         method: 'POST',
@@ -931,6 +1059,7 @@ async function sendMessage() {
         },
         body: JSON.stringify({
           message: userMessage,
+          context: contextMessages.length > 0 ? contextMessages : undefined,
           model_config_id: selectedModelId.value,
           enable_tools: true,
           max_iterations: 10,
@@ -1007,6 +1136,10 @@ async function sendMessage() {
                   streamingMsg.input_tokens = data.input_tokens
                   streamingMsg.output_tokens = data.output_tokens
                   streamingMsg.isStreaming = false
+                  // 保存上下文使用率
+                  if (data.context_usage) {
+                    contextUsage.value = data.context_usage
+                  }
                   // 持久化 AI 回复
                   persistMessage(targetConversation, 'assistant', streamingMsg.content || '', streamingMsg.toolCalls)
                   break
@@ -1861,6 +1994,29 @@ onUnmounted(() => {
     padding: 16px 24px;
     background: var(--pc-bg-elevated);
     border-top: 1px solid var(--pc-border);
+
+    .context-usage-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      padding: 6px 10px;
+      background: rgba(var(--pc-warning-rgb), 0.08);
+      border-radius: 6px;
+      font-size: 12px;
+
+      .usage-progress {
+        width: 80px;
+        flex-shrink: 0;
+      }
+
+      .usage-label {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    }
 
     .input-main {
       margin-bottom: 12px;

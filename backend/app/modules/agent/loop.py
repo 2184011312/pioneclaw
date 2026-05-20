@@ -176,6 +176,8 @@ class AgentLoop:
         # Context 压缩（Phase 1: Context 卫生）
         compactor: Optional[Any] = None,  # Compactor 实例（LLM 级压缩）
         context_pruner: Optional[Any] = None,  # ContextPruner 实例（Microcompact + Snip）
+        compression_service: Optional[Any] = None,  # ContextCompressionService 统一入口
+        file_tracker: Optional[Any] = None,  # FileTracker 实例（Phase 6: 压缩后文件恢复）
     ):
         """
         初始化 AgentLoop
@@ -204,6 +206,7 @@ class AgentLoop:
             inbox_queue: Agent 间消息收件箱（asyncio.Queue），非 None 时每轮迭代前检查消息
             compactor: Compactor 实例（LLM 级对话压缩），None 时禁用
             context_pruner: ContextPruner 实例（Microcompact + Snip），None 时禁用
+            compression_service: ContextCompressionService 统一入口，None 时从 compactor + context_pruner 自动构建
         """
         self.provider = provider
         self.tools = tools
@@ -252,6 +255,14 @@ class AgentLoop:
         # Context 压缩（Phase 1: Context 卫生）
         self._compactor = compactor
         self._context_pruner = context_pruner
+        self._compression_service = compression_service
+
+        # Phase 6: 压缩后文件恢复
+        if file_tracker is not None:
+            self._file_tracker = file_tracker
+        else:
+            from app.modules.agent.file_tracker import FileTracker
+            self._file_tracker = FileTracker(max_files=5, max_tokens=50_000)
 
         # 工具调用去重
         self.seen_tool_call_ids: set[str] = set()
@@ -675,6 +686,8 @@ class AgentLoop:
                             try:
                                 result = await self._execute_tool(tc_name, tc_args)
                                 logger.debug(f"Tool {tc_name} executed successfully")
+                                # Phase 6: 跟踪文件访问
+                                self._track_file_access(tc_name, tc_args, result, tc_id)
                                 break
                             except RecoverableToolError as e:
                                 last_error = e
@@ -770,6 +783,7 @@ class AgentLoop:
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc_id,
+                                "tool_name": tc_name,
                                 "content": result,
                             })
                         else:
@@ -807,6 +821,7 @@ class AgentLoop:
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc_id,
+                                "tool_name": tc_name,
                                 "content": error_msg,
                             })
                     except Exception as tool_error:
@@ -900,9 +915,27 @@ class AgentLoop:
                         temperature=temperature,
                         max_tokens=max_tokens,
                     ):
-                        # chunk 是 StreamChunk dataclass，需要转换为 dict
-                        yield self._convert_stream_chunk(chunk)
-                    return  # 成功完成，退出
+                        converted = self._convert_stream_chunk(chunk)
+                        # 检测 prompt_too_long
+                        if converted.get("error") and self._is_prompt_too_long(converted["error"]):
+                            if attempt < max_retries and self._compression_service:
+                                logger.warning(
+                                    f"Prompt too long detected, emergency compact "
+                                    f"attempt {attempt + 1}/{max_retries}"
+                                )
+                                compacted = await self._compression_service.emergency_compact(
+                                    messages, attempt=attempt + 1
+                                )
+                                messages[:] = compacted  # 更新调用方的消息列表
+                                break  # 跳出 async for，外层循环继续重试
+                            else:
+                                yield converted
+                                return
+                        yield converted
+                    else:
+                        return  # 成功完成，正常退出
+                    # 因 prompt_too_long 触发 break，继续外层重试
+                    continue
                 except Exception as e:
                     import traceback
                     logger.error(f"_call_llm_stream error (attempt {attempt + 1}/{max_retries}): {e}\n{traceback.format_exc()}")
@@ -1007,6 +1040,16 @@ class AgentLoop:
         )
         return any(hint in error_text for hint in transient_hints)
 
+    def _is_prompt_too_long(self, error_text: str) -> bool:
+        """判断是否为上下文过长错误"""
+        text = error_text.lower()
+        hints = (
+            "prompt_too_long", "context length", "maximum context",
+            "token limit", "too many tokens", "exceeds maximum",
+            "context_length_exceeded", "maximum token",
+        )
+        return any(hint in text for hint in hints)
+
     async def _try_parallel_execute(
         self,
         tool_calls_buffer: List[Dict[str, Any]],
@@ -1065,6 +1108,8 @@ class AgentLoop:
         async def execute_one(tc_id, tc_name, tc_args):
             try:
                 result = await self._execute_tool(tc_name, tc_args)
+                # Phase 6: 跟踪文件访问
+                self._track_file_access(tc_name, tc_args, result, tc_id)
                 return (tc_id, tc_name, tc_args, result, None)
             except Exception as e:
                 return (tc_id, tc_name, tc_args, None, e)
@@ -1100,6 +1145,7 @@ class AgentLoop:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
+                    "tool_name": tc_name,
                     "content": result,
                 })
             else:
@@ -1120,6 +1166,7 @@ class AgentLoop:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
+                        "tool_name": tc_name,
                         "content": "[Cancelled: sibling tool failed]",
                     })
                 else:
@@ -1140,6 +1187,7 @@ class AgentLoop:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
+                        "tool_name": tc_name,
                         "content": error_msg,
                     })
 
@@ -1157,25 +1205,33 @@ class AgentLoop:
         """Context 压缩链：Snip → MicroCompacter → Compactor
 
         每轮 LLM 调用前执行，逐层压缩释放 context 空间。
-        返回（可能新的）消息列表。
+        优先使用 ContextCompressionService 统一入口；未注入时回退到直接调用组件。
         """
         if not messages:
             return messages
 
+        # 优先使用 ContextCompressionService（Phase 1 改造后的统一入口）
+        if self._compression_service is not None:
+            try:
+                return await self._compression_service.auto_prune(messages, self.provider)
+            except Exception as e:
+                logger.warning(f"CompressionService auto_prune failed: {e}, falling back")
+
+        # Fallback：直接调用各组件（向后兼容）
         total_saved = 0
 
-        # Layer 1: Snip — 零成本裁剪（空消息、超长 reasoning）
+        # Layer 1: Snip — 零成本裁剪
         if self._context_pruner:
             snipped, saved = self._context_pruner.snip_prune(messages)
             messages = snipped
             total_saved += saved
 
-        # Layer 2: MicroCompacter — 清除旧工具结果内容
+        # Layer 2: MicroCompacter
         if self._context_pruner:
             messages, saved = self._context_pruner.micro_compact(messages)
             total_saved += saved
 
-        # Layer 3: Compactor — LLM 级对话压缩（达到阈值时触发）
+        # Layer 3: Compactor
         if self._compactor:
             estimated_tokens = self._compactor._estimate_tokens(messages)
             if self._compactor.should_compact(messages, estimated_tokens):
@@ -1239,6 +1295,28 @@ class AgentLoop:
             "content": f"[Previous conversation summary]\n{summary}",
         })
         rebuilt.extend(recent)
+
+        # Phase 6: 恢复关键文件内容
+        if self._file_tracker and self._file_tracker.record_count > 0:
+            restored_files = self._file_tracker.get_recent(
+                max_tokens=50_000, max_files=5
+            )
+            if restored_files:
+                restored_lines = ["[Restored files after context compression]"]
+                for record in restored_files:
+                    restored_lines.append(
+                        f"- {record.path} "
+                        f"(edited={record.was_edited}, "
+                        f"tokens={record.estimated_tokens})"
+                    )
+                rebuilt.append({
+                    "role": "system",
+                    "content": "\n".join(restored_lines),
+                })
+                logger.info(
+                    f"Restored {len(restored_files)} files after compaction: "
+                    f"{[r.path for r in restored_files]}"
+                )
 
         return rebuilt
 
@@ -1542,7 +1620,37 @@ class AgentLoop:
             )
         except Exception as e:
             logger.debug(f"Failed to emit tool result: {e}")
-    
+
+    def _track_file_access(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result: str,
+        tool_call_id: str,
+    ) -> None:
+        """跟踪文件访问（Phase 6: 压缩后文件恢复）。
+
+        对 read_file/write_file/edit_file 工具，记录文件路径和内容。
+        """
+        if not self._file_tracker:
+            return
+
+        file_tools = {"read_file", "write_file", "edit_file"}
+        if tool_name not in file_tools:
+            return
+
+        path = arguments.get("path", "")
+        if not path:
+            return
+
+        was_edited = tool_name in {"write_file", "edit_file"}
+        self._file_tracker.record_access(
+            path=path,
+            content=result,
+            was_edited=was_edited,
+            tool_call_id=tool_call_id,
+        )
+
     async def _emit_agent_complete(
         self,
         content: str,
