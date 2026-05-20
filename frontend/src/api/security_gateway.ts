@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const sgApi = axios.create({
-  baseURL: import.meta.env.VITE_SECURITY_GATEWAY_URL || 'http://localhost:8001',
+  baseURL: import.meta.env.VITE_SECURITY_GATEWAY_URL || '/sg-api',
   timeout: 10000,
 })
 

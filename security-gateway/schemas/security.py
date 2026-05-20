@@ -96,6 +96,7 @@ class SecurityGatewayConfig(BaseModel):
     enable_regex_engine: bool = True
     enable_model_engine: bool = True
     enable_model_llm: bool = False
+    ai_config_id: Optional[int] = None
     model_engine_llm_url: str = ""
     model_engine_llm_model: str = "qwen2.5:1.5b"
     model_engine_llm_api_key: str = ""

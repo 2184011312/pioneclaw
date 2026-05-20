@@ -286,26 +286,35 @@
               <el-switch v-model="configForm.enable_model_llm" />
             </el-form-item>
 
-            <el-form-item label="供应商" v-show="configForm.enable_model_llm">
-              <el-select v-model="llmProvider" @change="onProviderChange" style="width: 100%">
-                <el-option label="OpenAI" value="openai" />
-                <el-option label="Azure OpenAI" value="azure" />
-                <el-option label="Ollama (本地)" value="ollama" />
-                <el-option label="Anthropic" value="anthropic" />
-                <el-option label="Custom (OpenAI Compatible)" value="custom" />
+            <el-form-item label="平台 AI 配置" v-show="configForm.enable_model_llm">
+              <el-select
+                v-model="configForm.ai_config_id"
+                @change="onAiConfigChange"
+                clearable
+                placeholder="手动输入（不引用平台配置）"
+                style="width: 100%"
+                :loading="aiConfigLoading"
+              >
+                <el-option
+                  v-for="cfg in aiConfigList"
+                  :key="cfg.id"
+                  :label="cfg.display_name || cfg.name"
+                  :value="cfg.id"
+                />
               </el-select>
+              <div class="form-tip">选择平台已有配置可自动填充 URL/模型/Key，也可留空手动输入</div>
             </el-form-item>
+
             <el-form-item label="Base URL" v-show="configForm.enable_model_llm">
               <el-input
                 v-model="configForm.model_engine_llm_url"
-                :placeholder="llmUrlPlaceholder"
+                placeholder="https://your-api.com/v1/chat/completions"
               />
-              <div class="form-tip">{{ llmUrlTip }}</div>
             </el-form-item>
             <el-form-item label="模型 ID" v-show="configForm.enable_model_llm">
               <el-input
                 v-model="configForm.model_engine_llm_model"
-                :placeholder="llmModelPlaceholder"
+                placeholder="模型 ID"
               />
             </el-form-item>
             <el-form-item label="API Key" v-show="configForm.enable_model_llm">
@@ -390,6 +399,7 @@ import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import { securityGatewayApi, type FilterResult, type WordItem, type AuditLogItem } from '@/api/security_gateway'
+import { api } from '@/api'
 
 use([LineChart, BarChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer])
 
@@ -612,6 +622,7 @@ const configForm = reactive({
   enable_regex_engine: true,
   enable_model_engine: true,
   enable_model_llm: false,
+  ai_config_id: null as number | null,
   model_engine_llm_url: '',
   model_engine_llm_model: 'qwen2.5:1.5b',
   model_engine_llm_api_key: '',
@@ -620,6 +631,29 @@ const configForm = reactive({
   log_retention_days: 180,
 })
 const configLoading = ref(false)
+
+// 平台 AI 配置列表
+const aiConfigList = ref<any[]>([])
+const aiConfigLoading = ref(false)
+const aiConfigMap = ref<Record<number, any>>({})
+
+const loadAiConfigs = async () => {
+  aiConfigLoading.value = true
+  try {
+    const { data } = await api.get('/ai-configs')
+    aiConfigList.value = data || []
+    // 构建 id -> config 映射
+    const map: Record<number, any> = {}
+    for (const cfg of aiConfigList.value) {
+      map[cfg.id] = cfg
+    }
+    aiConfigMap.value = map
+  } catch (e: any) {
+    ElMessage.error('加载平台 AI 配置失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    aiConfigLoading.value = false
+  }
+}
 
 const loadConfig = async () => {
   try {
@@ -642,71 +676,37 @@ const saveConfig = async () => {
   }
 }
 
-// LLM 供应商配置
-const llmProvider = ref('custom')
+const onAiConfigChange = (configId: number | null) => {
+  llmTestResult.value = null
+  if (!configId) return
+  const cfg = aiConfigMap.value[configId]
+  if (!cfg) return
+  // 自动填充 URL/模型
+  if (cfg.base_url) {
+    configForm.model_engine_llm_url = cfg.base_url
+  }
+  if (cfg.model_name) {
+    configForm.model_engine_llm_model = cfg.model_name
+  }
+  // API Key 从平台获取明文（需要管理员权限）
+  loadAiConfigApiKey(configId)
+}
+
+const loadAiConfigApiKey = async (configId: number) => {
+  try {
+    const { data } = await api.get(`/ai-configs/${configId}/api-key`)
+    if (data.api_key) {
+      configForm.model_engine_llm_api_key = data.api_key
+    }
+  } catch (e: any) {
+    // 非管理员可能无权查看，静默失败
+    console.warn('无法获取平台配置 API Key:', e.message)
+  }
+}
+
+// LLM 测试
 const testingLlm = ref(false)
 const llmTestResult = ref<any>(null)
-
-const PROVIDER_URLS: Record<string, string> = {
-  openai: 'https://api.openai.com/v1/chat/completions',
-  azure: '',
-  ollama: 'http://localhost:11434/v1/chat/completions',
-  anthropic: 'https://api.anthropic.com/v1/messages',
-  custom: '',
-}
-
-const PROVIDER_MODELS: Record<string, string> = {
-  openai: 'gpt-4o',
-  azure: 'gpt-4',
-  ollama: 'qwen2.5:1.5b',
-  anthropic: 'claude-3-sonnet-20240229',
-  custom: '',
-}
-
-const llmUrlPlaceholder = computed(() => {
-  const map: Record<string, string> = {
-    openai: 'https://api.openai.com/v1/chat/completions',
-    azure: 'https://your-resource.openai.azure.com/openai/deployments/...',
-    ollama: 'http://localhost:11434/v1/chat/completions',
-    anthropic: 'https://api.anthropic.com/v1/messages',
-    custom: 'https://your-api.com/v1/chat/completions',
-  }
-  return map[llmProvider.value] || 'https://...'
-})
-
-const llmUrlTip = computed(() => {
-  const map: Record<string, string> = {
-    openai: 'OpenAI 官方 API 地址',
-    azure: 'Azure OpenAI Endpoint，需包含 deployment 和 api-version',
-    ollama: 'Ollama 本地服务地址，默认端口 11434',
-    anthropic: 'Anthropic API 地址（需确保为 OpenAI-compatible 代理）',
-    custom: '自定义 OpenAI-compatible API 地址',
-  }
-  return map[llmProvider.value] || ''
-})
-
-const llmModelPlaceholder = computed(() => {
-  const map: Record<string, string> = {
-    openai: 'gpt-4o, gpt-4o-mini, gpt-3.5-turbo',
-    azure: 'your-deployment-name',
-    ollama: 'qwen2.5:1.5b, llama3.1:8b',
-    anthropic: 'claude-3-sonnet-20240229',
-    custom: '模型 ID',
-  }
-  return map[llmProvider.value] || '模型 ID'
-})
-
-const onProviderChange = (val: string) => {
-  llmTestResult.value = null
-  const defaultUrl = PROVIDER_URLS[val]
-  if (defaultUrl && !configForm.model_engine_llm_url) {
-    configForm.model_engine_llm_url = defaultUrl
-  }
-  const defaultModel = PROVIDER_MODELS[val]
-  if (defaultModel && !configForm.model_engine_llm_model) {
-    configForm.model_engine_llm_model = defaultModel
-  }
-}
 
 const testLlmConnection = async () => {
   testingLlm.value = true
@@ -819,6 +819,7 @@ onMounted(() => {
   loadDashboard()
   loadWords()
   loadAuditLogs()
+  loadAiConfigs()
   loadConfig()
 })
 </script>

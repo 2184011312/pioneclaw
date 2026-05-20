@@ -2,7 +2,10 @@
 Security Gateway 配置
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
+_ENV_FILE = Path(__file__).parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -42,7 +45,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_prefix = "SG_"
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
 
 
 settings = Settings()

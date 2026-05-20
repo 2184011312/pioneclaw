@@ -25,6 +25,7 @@ def _get_merged_config() -> dict:
         "enable_regex_engine": settings.ENABLE_REGEX_ENGINE,
         "enable_model_engine": settings.ENABLE_MODEL_ENGINE,
         "enable_model_llm": settings.ENABLE_MODEL_LLM,
+        "ai_config_id": None,
         "model_engine_llm_url": settings.MODEL_ENGINE_LLM_URL,
         "model_engine_llm_model": settings.MODEL_ENGINE_LLM_MODEL,
         "model_engine_llm_api_key": settings.MODEL_ENGINE_LLM_API_KEY,
@@ -79,6 +80,10 @@ async def test_llm_connection(data: dict):
 
     if not url:
         return {"success": False, "message": "LLM API 地址不能为空"}
+
+    # 自动补全 /chat/completions 路径
+    if not url.endswith("/chat/completions"):
+        url = url.rstrip("/") + "/chat/completions"
 
     start = time.time()
     try:

@@ -250,7 +250,10 @@ class LLMDetector:
     ):
         # 优先使用传入参数，其次运行时配置，最后 settings 默认值
         runtime = self._get_runtime_config()
-        self._api_url = api_url or runtime.get("model_engine_llm_url") or settings.MODEL_ENGINE_LLM_URL
+        url = api_url or runtime.get("model_engine_llm_url") or settings.MODEL_ENGINE_LLM_URL
+        if url and not url.endswith("/chat/completions"):
+            url = url.rstrip("/") + "/chat/completions"
+        self._api_url = url
         self._model = model or runtime.get("model_engine_llm_model") or settings.MODEL_ENGINE_LLM_MODEL
         self._api_key = api_key or runtime.get("model_engine_llm_api_key") or settings.MODEL_ENGINE_LLM_API_KEY
         self._timeout = timeout or runtime.get("model_engine_llm_timeout") or settings.MODEL_ENGINE_LLM_TIMEOUT
