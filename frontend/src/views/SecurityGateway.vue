@@ -256,6 +256,80 @@
           />
         </el-card>
       </el-tab-pane>
+
+      <!-- 配置管理 -->
+      <el-tab-pane label="配置管理" name="config">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>引擎与模型配置</span>
+              <el-button type="primary" @click="saveConfig">
+                <el-icon><Check /></el-icon> 保存配置
+              </el-button>
+            </div>
+          </template>
+
+          <el-form :model="configForm" label-width="160px" style="max-width: 600px">
+            <el-divider>引擎开关</el-divider>
+            <el-form-item label="启用词引擎">
+              <el-switch v-model="configForm.enable_word_engine" />
+            </el-form-item>
+            <el-form-item label="启用正则引擎">
+              <el-switch v-model="configForm.enable_regex_engine" />
+            </el-form-item>
+            <el-form-item label="启用模型引擎">
+              <el-switch v-model="configForm.enable_model_engine" />
+            </el-form-item>
+
+            <el-divider>模型引擎 LLM 增强（可选）</el-divider>
+            <el-form-item label="启用 LLM 增强">
+              <el-switch v-model="configForm.enable_model_llm" />
+            </el-form-item>
+            <el-form-item label="LLM API 地址">
+              <el-input
+                v-model="configForm.model_engine_llm_url"
+                placeholder="例如：http://localhost:11434/v1/chat/completions"
+                :disabled="!configForm.enable_model_llm"
+              />
+            </el-form-item>
+            <el-form-item label="LLM 模型名">
+              <el-input
+                v-model="configForm.model_engine_llm_model"
+                placeholder="例如：qwen2.5:1.5b"
+                :disabled="!configForm.enable_model_llm"
+              />
+            </el-form-item>
+            <el-form-item label="LLM API Key">
+              <el-input
+                v-model="configForm.model_engine_llm_api_key"
+                placeholder="无认证可留空"
+                type="password"
+                show-password
+                :disabled="!configForm.enable_model_llm"
+              />
+            </el-form-item>
+            <el-form-item label="LLM 超时（秒）">
+              <el-input-number
+                v-model="configForm.model_engine_llm_timeout"
+                :min="1"
+                :max="30"
+                :disabled="!configForm.enable_model_llm"
+              />
+            </el-form-item>
+
+            <el-divider>其他</el-divider>
+            <el-form-item label="降级放行（Fail Open）">
+              <el-switch v-model="configForm.fail_open" />
+              <template #append>
+                <el-text type="info">安全网关异常时放行请求</el-text>
+              </template>
+            </el-form-item>
+            <el-form-item label="日志保留天数">
+              <el-input-number v-model="configForm.log_retention_days" :min="1" :max="3650" />
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 创建/编辑词对话框 -->
@@ -292,7 +366,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Plus, Refresh, Check } from '@element-plus/icons-vue'
 import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components'
@@ -515,6 +589,42 @@ const loadAuditLogs = async () => {
   }
 }
 
+// 配置管理
+const configForm = reactive({
+  enable_word_engine: true,
+  enable_regex_engine: true,
+  enable_model_engine: true,
+  enable_model_llm: false,
+  model_engine_llm_url: '',
+  model_engine_llm_model: 'qwen2.5:1.5b',
+  model_engine_llm_api_key: '',
+  model_engine_llm_timeout: 3,
+  fail_open: true,
+  log_retention_days: 180,
+})
+const configLoading = ref(false)
+
+const loadConfig = async () => {
+  try {
+    const { data } = await securityGatewayApi.getConfig()
+    Object.assign(configForm, data)
+  } catch (e: any) {
+    ElMessage.error('加载配置失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+const saveConfig = async () => {
+  configLoading.value = true
+  try {
+    await securityGatewayApi.updateConfig(configForm)
+    ElMessage.success('配置已保存')
+  } catch (e: any) {
+    ElMessage.error('保存配置失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    configLoading.value = false
+  }
+}
+
 // 辅助函数
 const actionLabel = (action: string) => {
   const map: Record<string, string> = {
@@ -603,6 +713,7 @@ onMounted(() => {
   loadDashboard()
   loadWords()
   loadAuditLogs()
+  loadConfig()
 })
 </script>
 

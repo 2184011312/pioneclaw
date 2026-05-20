@@ -2,23 +2,67 @@
 配置管理 API
 
 提供安全网关运行配置的查询和更新。
+支持运行时热更新（无需重启服务）。
 """
 
+import logging
 from fastapi import APIRouter
 from schemas.security import SecurityGatewayConfig
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["config"])
+
+# 运行时配置覆盖（内存级，服务重启后恢复为环境变量值）
+_runtime_overrides: dict = {}
+
+
+def _get_merged_config() -> dict:
+    """合并环境变量默认值 + 运行时覆盖"""
+    base = {
+        "enable_word_engine": settings.ENABLE_WORD_ENGINE,
+        "enable_regex_engine": settings.ENABLE_REGEX_ENGINE,
+        "enable_model_engine": settings.ENABLE_MODEL_ENGINE,
+        "enable_model_llm": settings.ENABLE_MODEL_LLM,
+        "model_engine_llm_url": settings.MODEL_ENGINE_LLM_URL,
+        "model_engine_llm_model": settings.MODEL_ENGINE_LLM_MODEL,
+        "model_engine_llm_api_key": settings.MODEL_ENGINE_LLM_API_KEY,
+        "model_engine_llm_timeout": settings.MODEL_ENGINE_LLM_TIMEOUT,
+        "word_engine_cache_ttl": settings.WORD_ENGINE_CACHE_TTL,
+        "fail_open": settings.FAIL_OPEN,
+        "log_retention_days": settings.LOG_RETENTION_DAYS,
+    }
+    base.update(_runtime_overrides)
+    return base
 
 
 @router.get("/config", response_model=SecurityGatewayConfig)
 async def get_config():
-    """获取当前配置"""
-    return SecurityGatewayConfig(
-        enable_word_engine=settings.ENABLE_WORD_ENGINE,
-        enable_regex_engine=settings.ENABLE_REGEX_ENGINE,
-        enable_model_engine=settings.ENABLE_MODEL_ENGINE,
-        word_engine_cache_ttl=settings.WORD_ENGINE_CACHE_TTL,
-        fail_open=settings.FAIL_OPEN,
-        log_retention_days=settings.LOG_RETENTION_DAYS,
-    )
+    """获取当前配置（环境变量 + 运行时覆盖）"""
+    return SecurityGatewayConfig(**_get_merged_config())
+
+
+@router.put("/config", response_model=SecurityGatewayConfig)
+async def update_config(data: SecurityGatewayConfig):
+    """更新运行时配置
+
+    注意：运行时配置仅在当前服务进程生效，重启后恢复为环境变量值。
+    如需持久化，请在 .env 文件中设置对应的环境变量。
+    """
+    global _runtime_overrides
+    update_data = data.model_dump(exclude_unset=True)
+    _runtime_overrides.update(update_data)
+
+    # 如果 LLM 相关配置变更，清理旧的 LLM detector 缓存
+    # 下次 model_engine.check() 时会使用新配置重新创建
+    from engines.model_engine import LLMDetector
+    LLMDetector._clear_instance_cache()
+
+    logger.info(f"Runtime config updated: {list(update_data.keys())}")
+    return SecurityGatewayConfig(**_get_merged_config())
+
+
+def get_runtime_config() -> dict:
+    """供内部模块获取最新运行时配置"""
+    return _get_merged_config()

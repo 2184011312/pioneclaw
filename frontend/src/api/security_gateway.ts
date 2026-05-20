@@ -104,6 +104,11 @@ export const securityGatewayApi = {
     return sgApi.get('/api/v1/admin/config')
   },
 
+  // 更新配置
+  updateConfig(data: any) {
+    return sgApi.put('/api/v1/admin/config', data)
+  },
+
   // 看板统计
   getDashboardStats(days?: number) {
     return sgApi.get('/api/v1/admin/dashboard/stats', { params: { days } })
