@@ -334,7 +334,7 @@ async def react_chat(
     # Context 压缩组件（Phase 1）
     context_pruner = ContextPruner()
     compactor = Compactor(
-        config=CompactionConfig(),
+        config=CompactionConfig(context_window=config.context_window),
         llm_client=provider,
         user_id=current_user.id,
         session_id=request.session_id,
@@ -504,7 +504,7 @@ async def react_chat_stream(
     # Context 压缩组件（Phase 1）
     context_pruner = CP()
     compactor = C(
-        config=CC(),
+        config=CC(context_window=config.context_window),
         llm_client=provider,
         user_id=current_user.id,
         session_id=request.session_id,

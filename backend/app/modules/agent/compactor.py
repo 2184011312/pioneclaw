@@ -159,24 +159,46 @@ class CompactionResult:
 
 @dataclass
 class CompactionConfig:
-    """压缩配置"""
-    # 消息数量阈值
-    message_threshold: int = 30
+    """压缩配置
 
-    # Token 数阈值
-    token_threshold: int = 5000
+    阈值策略（对标 Claude Code）：
+    - 日常 context 控制由 Snip + MicroCompact 承担
+    - Compactor 是最后防线，只在接近模型上下文上限时才触发
+    - token_threshold = context_window - buffer_tokens
+    """
+    # 模型上下文窗口大小，从 AI 配置读取
+    context_window: int = 200_000
+
+    # 安全缓冲 token：预留空间给工具结果 + 模型输出
+    # Claude Code 用 33K (20K output reserve + 13K buffer)
+    buffer_tokens: int = 33_000
+
+    # 消息数阈值（兜底保护：token 估算可能不准）
+    message_threshold: int = 200
 
     # 保留最近消息数
     keep_recent_messages: int = 8
 
     # 摘要最大字符数
     max_summary_chars: int = 3000
-    
+
     # 是否生成记忆条目
     generate_memory: bool = True
-    
+
     # 是否使用递归总结
     use_recursive_summary: bool = True
+
+    @property
+    def token_threshold(self) -> int:
+        """触发压缩的 token 阈值 = context_window - effective_buffer
+
+        小上下文模型（context_window <= buffer_tokens）自动缩小 buffer
+        到窗口的 10%，避免阈值变成负数。
+        """
+        effective_buffer = self.buffer_tokens
+        if self.context_window <= self.buffer_tokens:
+            effective_buffer = max(1, self.context_window // 10)
+        return self.context_window - effective_buffer
 
 
 # ==================== Compactor 类 ====================
@@ -218,23 +240,35 @@ class Compactor:
     ) -> bool:
         """
         判断是否需要压缩
-        
+
+        触发条件（任一满足即触发）：
+        1. 消息数超过 message_threshold（兜底保护，token 估算可能不准）
+        2. Token 数超过 token_threshold = context_window - buffer_tokens
+
         Args:
             messages: 消息列表
             token_count: Token 数（可选，不传则估算）
-            
+
         Returns:
             bool: 是否需要压缩
         """
         if len(messages) > self.config.message_threshold:
+            logger.info(
+                f"Compaction triggered: message count {len(messages)} > {self.config.message_threshold}"
+            )
             return True
-        
+
         if token_count is None:
             token_count = self._estimate_tokens(messages)
-        
-        if token_count > self.config.token_threshold:
+
+        threshold = self.config.token_threshold
+        if token_count > threshold:
+            logger.info(
+                f"Compaction triggered: tokens {token_count} > threshold {threshold} "
+                f"(window={self.config.context_window}, buffer={self.config.buffer_tokens})"
+            )
             return True
-        
+
         return False
     
     async def compact(
@@ -484,8 +518,9 @@ class Compactor:
 # ==================== 便捷函数 ====================
 
 def create_compactor(
-    message_threshold: int = 50,
-    token_threshold: int = 8000,
+    context_window: int = 200_000,
+    buffer_tokens: int = 33_000,
+    message_threshold: int = 200,
     keep_recent: int = 10,
     llm_client=None,
     user_id: int = 1,
@@ -494,8 +529,9 @@ def create_compactor(
 ) -> Compactor:
     """创建 Compactor 实例"""
     config = CompactionConfig(
+        context_window=context_window,
+        buffer_tokens=buffer_tokens,
         message_threshold=message_threshold,
-        token_threshold=token_threshold,
         keep_recent_messages=keep_recent,
     )
     return Compactor(

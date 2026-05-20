@@ -242,7 +242,7 @@ async def execute_agent(
         from app.modules.agent.compactor import Compactor, CompactionConfig
         context_pruner = ContextPruner()
         compactor = Compactor(
-            config=CompactionConfig(),
+            config=CompactionConfig(context_window=model_config.context_window),
             llm_client=provider,
             user_id=current_user.id,
             session_id=str(execution.id),
@@ -388,7 +388,7 @@ async def execute_agent_stream(
     from app.modules.agent.compactor import Compactor, CompactionConfig
     context_pruner = ContextPruner()
     compactor = Compactor(
-        config=CompactionConfig(),
+        config=CompactionConfig(context_window=model_config.context_window),
         llm_client=provider,
         user_id=current_user.id,
         session_id=f"stream_{agent_id}_{int(time.time())}",
