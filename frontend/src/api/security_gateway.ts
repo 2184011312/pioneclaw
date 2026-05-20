@@ -11,6 +11,12 @@ export interface FilterResult {
   reason?: string
   risk_level: string
   matched_rules?: any[]
+  model_result?: {
+    category: string
+    severity: number
+    description: string
+    source: string
+  }
 }
 
 export interface WordItem {

@@ -14,7 +14,14 @@ class Settings(BaseSettings):
     # 引擎开关
     ENABLE_WORD_ENGINE: bool = True
     ENABLE_REGEX_ENGINE: bool = True
-    ENABLE_MODEL_ENGINE: bool = False
+    ENABLE_MODEL_ENGINE: bool = True
+
+    # 模型引擎 LLM 增强（可选）
+    ENABLE_MODEL_LLM: bool = False
+    MODEL_ENGINE_LLM_URL: str = ""
+    MODEL_ENGINE_LLM_MODEL: str = "qwen2.5:1.5b"
+    MODEL_ENGINE_LLM_API_KEY: str = ""
+    MODEL_ENGINE_LLM_TIMEOUT: float = 3.0
 
     # 词库缓存
     WORD_ENGINE_CACHE_TTL: int = 60

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from engines.word_engine import WordEngine
 from engines.regex_engine import RegexEngine
 from engines.decision_engine import DecisionEngine, SafetyAction
+from engines.model_engine import ModelEngine
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class FilterService:
             return
         self._word_engine = WordEngine()
         self._regex_engine = RegexEngine()
+        self._model_engine = ModelEngine()
         self._decision = DecisionEngine()
         self._initialized = True
         logger.info("FilterService initialized")
@@ -71,6 +73,7 @@ class FilterService:
         """
         word_matches = []
         regex_matches = []
+        model_result = None
 
         if settings.ENABLE_WORD_ENGINE and self._word_engine.is_loaded:
             word_matches = self._word_engine.check(text)
@@ -78,11 +81,28 @@ class FilterService:
         if settings.ENABLE_REGEX_ENGINE:
             regex_matches = self._regex_engine.detect(text)
 
+        # 模型引擎：语义风险检测
+        if settings.ENABLE_MODEL_ENGINE:
+            try:
+                model_result = await self._model_engine.check(text)
+            except Exception as e:
+                logger.warning(f"Model engine check failed: {e}")
+
         result = self._decision.decide(
             word_matches=word_matches,
             regex_matches=regex_matches,
+            model_result=model_result,
             check_point="input",
         )
+
+        # 将模型引擎原始结果附加到响应（便于调试和审计）
+        if model_result:
+            result["model_result"] = {
+                "category": model_result.get("meta", {}).get("category"),
+                "severity": model_result.get("severity"),
+                "description": model_result.get("meta", {}).get("description"),
+                "source": model_result.get("meta", {}).get("source", "rule"),
+            }
 
         # 脱敏
         if result["action"] == SafetyAction.SANITIZE:

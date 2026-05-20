@@ -18,6 +18,7 @@ class FilterInputResponse(BaseModel):
     reason: Optional[str] = None
     risk_level: str = "low"
     matched_rules: Optional[List[dict]] = None
+    model_result: Optional[Dict[str, Any]] = None  # 模型引擎原始结果
 
 
 class CheckToolRequest(BaseModel):

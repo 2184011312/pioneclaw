@@ -42,6 +42,14 @@
                 {{ rule.type }}: {{ rule.match || rule.word }} (severity={{ rule.severity }})
               </el-tag>
             </div>
+            <div v-if="testResult.model_result" class="mt-3">
+              <el-text type="info">模型检测:</el-text>
+              <el-tag :type="tagType(testResult.model_result.severity)" class="ml-2">
+                {{ testResult.model_result.category }} (severity={{ testResult.model_result.severity }})
+              </el-tag>
+              <el-text type="info" class="ml-2">{{ testResult.model_result.description }}</el-text>
+              <el-tag v-if="testResult.model_result.source === 'llm'" type="primary" size="small" class="ml-2">LLM</el-tag>
+            </div>
             <div v-if="testResult.content" class="mt-3">
               <el-text type="info">脱敏结果:</el-text>
               <el-input v-model="testResult.content" type="textarea" :rows="3" readonly class="mt-2" />
