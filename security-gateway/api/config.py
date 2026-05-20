@@ -104,7 +104,8 @@ async def test_llm_connection(data: dict):
                 content = ""
                 if choices:
                     msg = choices[0].get("message", {})
-                    content = msg.get("content", "")[:100]
+                    raw_content = msg.get("content")
+                    content = (raw_content or "")[:100]
                 return {
                     "success": True,
                     "message": "连接成功",

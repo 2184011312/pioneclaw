@@ -347,7 +347,10 @@ class LLMDetector:
         if not choices:
             return ""
         message = choices[0].get("message", {})
-        return message.get("content", "").strip()
+        content = message.get("content")
+        if content is None:
+            return ""
+        return str(content).strip()
 
     @staticmethod
     def _parse_json(text: str) -> Optional[Dict[str, Any]]:
