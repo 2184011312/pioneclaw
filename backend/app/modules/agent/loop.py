@@ -1261,7 +1261,7 @@ class AgentLoop:
                         "role": "tool",
                         "tool_call_id": tc_id,
                         "tool_name": tc_name,
-                        "content": "[Cancelled: sibling tool failed]",
+                        "content": "[Skipped: sibling tool failed]",
                     })
                 else:
                     has_failure = True

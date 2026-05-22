@@ -9,6 +9,7 @@ Layer 4: User interactive prompt
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -68,6 +69,11 @@ async def resolve_permission(
         result = check_permissions(input, ctx)
         if asyncio.iscoroutine(result):
             result = await result
+        if result is None:
+            result = PermissionResult(
+                behavior=PermissionBehavior.ALLOW,
+                reason="layer3_none_fallback",
+            )
         if result.behavior != PermissionBehavior.ASK:
             return result
 
@@ -82,7 +88,7 @@ async def resolve_permission(
     return ask_result
 
 
-import asyncio
+
 
 
 def match_rule(

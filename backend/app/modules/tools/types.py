@@ -130,6 +130,7 @@ class HookResult:
     block: bool = False
     message: str = ""
     transformed_result: Optional[ToolResult] = None
+    modified_args: Optional[dict[str, Any]] = None
 
 
 ToolHook = Callable[[HookContext], Any]  # returns HookResult | None | Awaitable
@@ -154,34 +155,30 @@ class ToolDef(ABC):
         """核心执行逻辑"""
         ...
 
-    def get_definition(self) -> dict[str, Any]:
-        """转换为 OpenAI Function Calling 格式"""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.id,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": self.parameters,
-                    "required": self._get_required(),
-                },
-            },
-        }
+    def get_definition(self) -> "ToolDefinition":
+        """获取工具定义（兼容旧注册表）"""
+        from app.modules.tools.base import ToolDefinition, ToolParameter
 
-    def _get_required(self) -> list[str]:
-        """从 JSON Schema properties 中提取 required 字段"""
-        required = []
-        for key, prop in self.parameters.items():
-            if isinstance(prop, dict):
-                if prop.get("required") is True:
-                    required.append(key)
-            elif hasattr(prop, "default") and prop.default is not None:
-                continue
-            # 兜底：如果当前工具类有 required 类属性，使用它
-        if hasattr(self, "required") and isinstance(self.required, list):
-            return self.required
-        return required
+        params: dict[str, Any] = {}
+        for pname, param in self.parameters.items():
+            if isinstance(param, ToolParameter):
+                params[pname] = {
+                    "type": param.type,
+                    "description": param.description,
+                    **({"enum": param.enum} if param.enum else {}),
+                    **({"default": param.default} if param.default is not None else {}),
+                }
+            elif isinstance(param, dict):
+                params[pname] = param
+            else:
+                params[pname] = {"type": "string", "description": str(param)}
+
+        return ToolDefinition(
+            name=self.id,
+            description=self.description,
+            parameters=params,
+            required=getattr(self, "required", []),
+        )
 
 
 # ============================================================================

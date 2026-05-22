@@ -109,7 +109,7 @@ def adapt_legacy_hook(
     event: "before_tool" | "after_tool" | "on_error"
     """
 
-    def wrapper(ctx: HookContext) -> HookResult | None:
+    async def wrapper(ctx: HookContext) -> HookResult | None:
         if tool_filter is not None:
             tool_id = getattr(ctx.tool, "id", "")
             if tool_id not in tool_filter:
@@ -129,8 +129,7 @@ def adapt_legacy_hook(
         try:
             result = callback(legacy_ctx)
             if asyncio.iscoroutine(result):
-                # 同步上下文无法 await，返回 None（由调用者处理异步）
-                return None
+                result = await result
 
             if result is None:
                 return None
@@ -143,7 +142,7 @@ def adapt_legacy_hook(
                     hr.message = result.get("message", "Blocked by legacy hook")
                 if "modified_args" in result:
                     # legacy hook 修改参数：在当前架构中需要上层配合
-                    pass
+                    hr.modified_args = result["modified_args"]
                 if "modified_result" in result:
                     hr.transformed_result = ctx.result
                     if hr.transformed_result:

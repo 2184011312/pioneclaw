@@ -155,7 +155,7 @@ class BaseTool(ToolDef, ToolDecorator, ABC):
         # 默认放行，由上层 PermissionChecker / resolve_permission 做主要拦截
         # 避免 Layer 3 默认 ask 导致所有工具被双重拦截
         return PermissionResult(
-            behavior="allow",
+            behavior=PermissionBehavior.ALLOW,
             reason="default",
         )
 

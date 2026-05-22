@@ -45,7 +45,7 @@ def get_max_concurrency() -> int:
     try:
         val = int(env)
         if val > 0:
-            return val
+            return min(val, 100)
     except ValueError:
         pass
     return 10
