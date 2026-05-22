@@ -1,8 +1,24 @@
 name: DeepSeek PR Review
 
+# ⚠️ SECURITY: This workflow uses pull_request_target, which runs in the
+# base repository context with access to secrets and write permissions.
+# DO NOT checkout the PR branch or execute untrusted code from the PR.
+# Only use gh API commands (e.g. gh pr diff) to read PR content safely.
+# For details: https://securitylab.github.com/research/github-actions-preventing-pwn-requests
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**.md'
+      - '**.svg'
+      - '**.png'
+      - '**.jpg'
+      - '**.jpeg'
+      - '**.gif'
+      - '**.webp'
+      - '**.ico'
+      - '**/*.lock'
+      - '**/__snapshots__/**'
 
 permissions:
   contents: read
@@ -19,11 +35,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout base repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
       - name: Get PR diff (filtered)
         run: |
           # 审查代码文件 + 配置文件（workflow、docker、脚本等）
