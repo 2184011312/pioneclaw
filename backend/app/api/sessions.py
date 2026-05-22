@@ -1,6 +1,7 @@
 """
 聊天会话 API — 列表、消息历史、删除
 """
+import logging
 import uuid
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -8,10 +9,25 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from app.core import get_db
-from app.models import User, Session, SessionMessage
+from app.models import User, Session, SessionMessage, Agent, AIModelConfig
 from app.api.auth import get_current_active_user
+from app.modules.agent.token_budget import TokenBudget
 
 router = APIRouter(prefix="/chat/sessions", tags=["会话管理"])
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONTEXT_WINDOW = 128000
+
+
+def _estimate_tokens(msgs: List[SessionMessage]) -> int:
+    """估算消息列表的 token 用量（字符数 // 4 的启发式算法）。"""
+    total = 0
+    for m in msgs:
+        total += len(m.content or "") // 4
+        total += len(m.reasoning_content or "") // 4
+        if m.tool_calls:
+            total += len(str(m.tool_calls)) // 4
+    return total
 
 
 @router.get("")
@@ -61,12 +77,34 @@ async def get_session(
     )
     messages = msgs_result.scalars().all()
 
+    # 尝试从会话关联的 Agent 获取模型上下文窗口
+    context_window = DEFAULT_CONTEXT_WINDOW
+    if session.agent_id:
+        agent_res = await db.execute(select(Agent).where(Agent.id == session.agent_id))
+        agent = agent_res.scalar_one_or_none()
+        if agent and agent.model:
+            model_res = await db.execute(
+                select(AIModelConfig.context_window)
+                .where(AIModelConfig.model_name == agent.model)
+                .where(AIModelConfig.is_active == True)
+            )
+            cw = model_res.scalar_one_or_none()
+            if cw:
+                context_window = cw
+
+    # 估算当前会话 token 用量（供前端切换会话时立即显示）
+    input_tokens = _estimate_tokens(messages)
+    budget = TokenBudget(context_window=context_window)
+    context_usage = budget.to_dict(input_tokens)
+    logger.info(f"[get_session] session={session_id} messages={len(messages)} input_tokens={input_tokens} context_usage={context_usage}")
+
     return {
         "id": session.id,
         "title": session.title,
         "workspace_path": session.workspace_path,
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
+        "context_usage": context_usage,
         "messages": [
             {
                 "id": m.id,

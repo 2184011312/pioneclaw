@@ -60,14 +60,6 @@
             </el-option-group>
           </el-select>
           <template v-if="currentConversation">
-            <el-button
-              size="small"
-              :title="'压缩上下文'"
-              @click="compactContext()"
-            >
-              <el-icon><Collection /></el-icon>
-              <span class="compact-btn-text">压缩</span>
-            </el-button>
             <el-dropdown trigger="click">
               <el-button size="small" circle>
                 <el-icon><MoreFilled /></el-icon>
@@ -126,7 +118,7 @@
               :class="msg.role"
             >
             <!-- 时间分隔线 -->
-            <div v-if="shouldShowTime(index)" class="time-divider">
+            <div v-if="shouldShowTime(msg.originalIndex)" class="time-divider">
               {{ formatFullTime(msg.timestamp) }}
             </div>
 
@@ -140,20 +132,20 @@
                 <div class="message-body">
                   <!-- 思考/推理内容（默认折叠，显示思考时长） -->
                   <div v-if="msg.thinkingContent" class="thinking-collapse">
-                    <div class="thinking-toggle" @click="toggleThinking(index)">
+                    <div class="thinking-toggle" @click="toggleThinking(msg.originalIndex)">
                       <span class="thinking-dot"></span>
                       <span class="thinking-label">Thought for {{ formatThinkingDuration(msg.thinkingContent) }}</span>
-                      <el-icon class="thinking-arrow" :class="{ expanded: isThinkingExpanded(index) }">
+                      <el-icon class="thinking-arrow" :class="{ expanded: isThinkingExpanded(msg.originalIndex) }">
                         <ArrowRight />
                       </el-icon>
                     </div>
-                    <div v-show="isThinkingExpanded(index)" class="thinking-content">{{ msg.thinkingContent }}</div>
+                    <div v-show="isThinkingExpanded(msg.originalIndex)" class="thinking-content">{{ msg.thinkingContent }}</div>
                   </div>
                   <!-- 工具调用 -->
                   <div v-if="msg.toolCalls && msg.toolCalls.length > 0" class="tool-call-bubble">
                     <div v-for="(tc, tcIndex) in msg.toolCalls" :key="tcIndex" class="tool-call-item" :class="`tool-status-${tc.status}`">
-                      <div class="tool-call-header" @click="toggleToolCall(index, tcIndex)">
-                        <el-icon class="expand-icon" :class="{ expanded: isToolCallExpanded(index, tcIndex) }">
+                      <div class="tool-call-header" @click="toggleToolCall(msg.originalIndex, tcIndex)">
+                        <el-icon class="expand-icon" :class="{ expanded: isToolCallExpanded(msg.originalIndex, tcIndex) }">
                           <ArrowRight />
                         </el-icon>
                         <el-icon :class="['tool-icon', `tool-icon-${getToolCategory(tc.name)}`]">
@@ -169,7 +161,7 @@
                         </span>
                         <span v-if="tc.duration != null" class="tool-duration">{{ tc.duration }}ms</span>
                       </div>
-                      <div v-show="isToolCallExpanded(index, tcIndex)" class="tool-result">
+                      <div v-show="isToolCallExpanded(msg.originalIndex, tcIndex)" class="tool-result">
                         <pre v-if="isJsonString(tc.result)" class="tool-result-json"><code>{{ formatJsonResult(tc.result) }}</code></pre>
                         <template v-else>{{ tc.result }}</template>
                       </div>
@@ -188,7 +180,7 @@
                       <el-button size="small" text @click="copyMessage(msg.content)">
                         <el-icon><CopyDocument /></el-icon>
                       </el-button>
-                      <el-button size="small" text @click="regenerate(index)">
+                      <el-button size="small" text @click="regenerate(msg.originalIndex)">
                         <el-icon><Refresh /></el-icon>
                       </el-button>
                     </div>
@@ -249,30 +241,6 @@
 
       <!-- 输入区域（类似 OpenClaw 风格） -->
       <div class="chat-input-area">
-        <!-- 上下文使用率提示 -->
-        <div v-if="contextUsageStatus && contextUsageStatus.status !== 'normal'" class="context-usage-bar">
-          <el-progress
-            :percentage="Math.round(contextUsageStatus.percent)"
-            :color="contextUsageStatus.color"
-            :stroke-width="8"
-            :show-text="true"
-            class="usage-progress"
-          />
-          <span class="usage-label" :style="{ color: contextUsageStatus.color }">
-            {{ contextUsageStatus.label }}
-            ({{ contextUsageStatus.inputTokens.toLocaleString() }} / {{ contextUsageStatus.window.toLocaleString() }} tokens)
-          </span>
-          <el-button
-            v-if="contextUsageStatus.status === 'caution' || contextUsageStatus.status === 'critical'"
-            size="small"
-            link
-            type="warning"
-            @click="compactContext()"
-          >
-            立即压缩
-          </el-button>
-        </div>
-
         <!-- 输入框 -->
         <div class="input-main">
           <el-input
@@ -291,6 +259,42 @@
         <!-- 底部工具栏 -->
         <div class="input-footer">
           <div class="footer-left">
+            <!-- 上下文余量环形指示器 -->
+            <el-tooltip
+              v-if="currentConversation"
+              placement="top"
+              :content="contextUsageTooltip"
+            >
+              <div
+                class="context-ring"
+                :class="{ 'is-critical': contextUsageStatus?.status === 'critical' || contextUsageStatus?.status === 'block' }"
+                @click="showCompactDialog = true"
+              >
+                <svg viewBox="0 0 32 32" width="28" height="28">
+                  <circle
+                    class="context-ring__track"
+                    cx="16"
+                    cy="16"
+                    r="13"
+                    fill="none"
+                    stroke-width="2.5"
+                  />
+                  <circle
+                    class="context-ring__progress"
+                    cx="16"
+                    cy="16"
+                    r="13"
+                    fill="none"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    :stroke="contextUsageStatus?.color || '#dcdfe6'"
+                    :stroke-dasharray="ringCircumference"
+                    :stroke-dashoffset="ringDashOffset"
+                  />
+                </svg>
+              </div>
+            </el-tooltip>
+
             <!-- Upload file -->
             <el-button size="small" :title="$t('chat.uploadFile')">
               <el-icon><Paperclip /></el-icon>
@@ -319,12 +323,38 @@
       </div>
     </div>
   </div>
+
+  <!-- 压缩上下文确认弹窗 -->
+  <el-dialog
+    v-model="showCompactDialog"
+    title="压缩上下文"
+    width="420px"
+    align-center
+  >
+    <div class="compact-dialog-body">
+      <div class="compact-dialog-usage">
+        <span class="usage-percent" :style="{ color: contextUsageStatus?.color }">
+          {{ Math.round(contextUsageStatus?.percent || 0) }}%
+        </span>
+        <span class="usage-detail">
+          {{ formatK(contextUsageStatus?.inputTokens || 0) }} / {{ formatK(contextUsageStatus?.window || 0) }}
+        </span>
+      </div>
+      <p class="compact-dialog-desc">
+        压缩将保留核心内容并生成摘要，可以显著减少 token 消耗并提升响应速度。
+      </p>
+    </div>
+    <template #footer>
+      <el-button @click="showCompactDialog = false">取消</el-button>
+      <el-button type="primary" @click="handleCompactConfirm">确认压缩</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, ChatLineRound, User, MoreFilled, CopyDocument, Refresh, ArrowRight, Fold, Expand, Paperclip, VideoPause, Promotion, QuestionFilled, Cpu, Tools, FolderOpened, Search, Setting, Document, Link, Collection } from '@element-plus/icons-vue'
+import { Plus, ChatLineRound, User, MoreFilled, CopyDocument, Refresh, ArrowRight, Fold, Expand, Paperclip, VideoPause, Promotion, QuestionFilled, Cpu, Tools, FolderOpened, Search, Setting, Document, Link } from '@element-plus/icons-vue'
 import { api, longApi } from '../api'
 import { useI18n } from 'vue-i18n'
 import { getAccessToken } from '@/stores/user'
@@ -389,9 +419,12 @@ const wrappedDispatch = (data: StreamRealtimeMessage) => {
 }
 
 // 映射旧字段 → 模板期望的字段（兼容现有模板）
+// 先 map 保留原始索引，再 filter，确保 originalIndex 指向 streamMessages.value 的真实下标
 const displayMessages = computed(() => {
-  const result = streamMessages.value
+  return streamMessages.value
+    .map((m, originalIndex) => ({ ...m, originalIndex }))
     .filter((m) => m.role !== 'system')
+    .filter((m) => !m.content?.startsWith('[Previous conversation summary]'))
     .map((m) => ({
       ...m,
       thinkingContent: m.reasoningContent,
@@ -402,7 +435,6 @@ const displayMessages = computed(() => {
         loading: tc.status === 'running',
       })),
     }))
-  return result
 })
 
 const { startStream } = useChatRealtime({
@@ -626,6 +658,7 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const sidebarCollapsed = ref(false) // 左侧栏折叠状态
 const searchKeyword = ref('')
 const contextUsage = ref<any>(null)  // 上下文使用率信息
+const showCompactDialog = ref(false)  // 压缩确认弹窗
 const expandedToolCalls = ref<Set<string>>(new Set())  // 展开的工具调用
 const expandedThinking = ref<Set<number>>(new Set())  // 展开的思考过程
 
@@ -663,23 +696,68 @@ const streamingMsgHasContent = computed(() => {
   return last.role === 'assistant' && last.isStreaming && (hasVisibleContent || hasToolCalls)
 })
 
+// 上下文用量状态映射表
+const STATUS_COLOR_MAP: Record<string, string> = {
+  critical: '#f56c6c',
+  block: '#f56c6c',
+  caution: '#e6a23c',
+  warning: '#409eff',
+  normal: '#67c23a',
+}
+
+const STATUS_LABEL_MAP: Record<string, string> = {
+  critical: '即将自动压缩',
+  caution: '上下文较长，可点击压缩',
+  warning: '上下文使用率较高',
+}
+
 // 上下文使用率状态（用于 UI 提示）
 const contextUsageStatus = computed(() => {
   const u = contextUsage.value
   if (!u) return null
+  const status = u.status || 'normal'
   return {
     percent: u.usage_percent || 0,
-    status: u.status || 'normal',
+    status,
     inputTokens: u.input_tokens || 0,
     window: u.context_window || 0,
-    label: u.status === 'critical' ? '即将自动压缩' :
-           u.status === 'caution' ? '上下文较长，可点击压缩' :
-           u.status === 'warning' ? '上下文使用率较高' : '',
-    color: u.status === 'critical' || u.status === 'block' ? '#f56c6c' :
-           u.status === 'caution' ? '#e6a23c' :
-           u.status === 'warning' ? '#409eff' : '#67c23a',
+    label: STATUS_LABEL_MAP[status] || '',
+    color: STATUS_COLOR_MAP[status] || '#67c23a',
   }
 })
+
+// 环形进度条常量
+const RING_RADIUS = 13
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS // ~81.68
+
+// 环形进度条 dashoffset
+const ringDashOffset = computed(() => {
+  const percent = contextUsageStatus.value?.percent || 0
+  return RING_CIRCUMFERENCE - (percent / 100) * RING_CIRCUMFERENCE
+})
+
+const ringCircumference = computed(() => RING_CIRCUMFERENCE)
+
+// Tooltip 内容：56k / 256k
+const contextUsageTooltip = computed(() => {
+  const u = contextUsageStatus.value
+  if (!u) return '发送消息后将显示 token 用量'
+  return `${formatK(u.inputTokens)} / ${formatK(u.window)}`
+})
+
+function formatK(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
+  return n.toString()
+}
+
+// 确认压缩
+async function handleCompactConfirm() {
+  const ok = await compactContext()
+  if (ok) {
+    showCompactDialog.value = false
+  }
+  // 失败时保持弹窗打开，compactContext 内部已显示错误提示
+}
 
 // 切换工具调用展开/收缩
 
@@ -942,12 +1020,17 @@ async function selectConversation(conv: Conversation) {
   syncCurrentMessagesToConv()
   currentConversation.value = conv
   inputMessage.value = conv.draftText || ''
+  contextUsage.value = null // 切换会话时重置用量
 
   let loadedMessages: ChatMessage[] = []
 
   // 1. 优先从后端加载（持久化数据为准）
   try {
     const res = await api.get(`/chat/sessions/${conv.id}`)
+    // 加载会话时同步显示上下文用量（后端估算值，发送新消息后会被真实值覆盖）
+    if (res.data?.context_usage) {
+      contextUsage.value = res.data.context_usage
+    }
     if (res.data?.messages && res.data.messages.length > 0) {
       loadedMessages = res.data.messages.map((m: any, i: number) => ({
         id: m.id || `msg-${Date.now()}-${i}`,
@@ -997,6 +1080,7 @@ async function selectConversation(conv: Conversation) {
 // 删除当前对话
 async function deleteCurrentConversation() {
   if (!currentConversation.value) return
+  contextUsage.value = null
   const convId = currentConversation.value.id
   const index = conversations.value.findIndex(c => c.id === convId)
   if (index > -1) {
@@ -1022,6 +1106,7 @@ function clearCurrentConversation() {
     clearMessages()
     currentConversation.value.messages = []
     currentConversation.value.title = $t('chat.newChat')
+    contextUsage.value = null
     saveConversations()
   }
 }
@@ -1043,14 +1128,14 @@ function exportConversation() {
 }
 
 // 手动压缩上下文
-async function compactContext(instruction?: string) {
+async function compactContext(instruction?: string): Promise<boolean> {
   if (!currentConversation.value) {
     ElMessage.warning('请先选择一个会话')
-    return
+    return false
   }
   if (streamMessages.value.length === 0) {
     ElMessage.warning('当前会话没有消息可压缩')
-    return
+    return false
   }
 
   const loading = ElMessage.info({ message: '正在压缩上下文...', duration: 0 })
@@ -1097,11 +1182,14 @@ async function compactContext(instruction?: string) {
       currentConversation.value.messages = [...nextMessages]
       saveConversations()
       ElMessage.success(`上下文已压缩，节省 ${data.saved_tokens?.toLocaleString() || '?'} tokens`)
+      return true
     } else {
       ElMessage.warning(data.message || '压缩失败')
+      return false
     }
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || '压缩请求失败')
+    return false
   } finally {
     loading.close()
   }
@@ -1492,6 +1580,10 @@ onMounted(async () => {
     // 1. 优先从后端加载消息（持久化数据为准）
     try {
       const res = await api.get(`/chat/sessions/${firstConv.id}`)
+      // 加载会话时同步显示上下文用量
+      if (res.data?.context_usage) {
+        contextUsage.value = res.data.context_usage
+      }
       if (res.data?.messages && res.data.messages.length > 0) {
         loadedMessages = res.data.messages.map((m: any, i: number) => ({
           id: m.id || `msg-${Date.now()}-${i}`,
@@ -2220,32 +2312,54 @@ onUnmounted(() => {
     30% { transform: translateY(-4px); }
   }
 
+  @keyframes pulse-ring {
+    0% { transform: scale(1); opacity: 0.6; }
+    50% { transform: scale(1.15); opacity: 0.3; }
+    100% { transform: scale(1); opacity: 0.6; }
+  }
+
   // 输入区域（类似 OpenClaw 风格）
   .chat-input-area {
     padding: 16px 24px;
     background: var(--pc-bg-elevated);
     border-top: 1px solid var(--pc-border);
 
-    .context-usage-bar {
+    .context-ring {
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+      position: relative;
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin-bottom: 8px;
-      padding: 6px 10px;
-      background: rgba(var(--pc-warning-rgb), 0.08);
-      border-radius: 6px;
-      font-size: 12px;
+      justify-content: center;
+      border-radius: 50%;
+      transition: transform 0.2s ease;
 
-      .usage-progress {
-        width: 80px;
-        flex-shrink: 0;
+      &:hover {
+        transform: scale(1.1);
       }
 
-      .usage-label {
-        flex: 1;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+      svg {
+        transform: rotate(-90deg);
+      }
+
+      .context-ring__track {
+        stroke: var(--pc-border, #dcdfe6);
+      }
+
+      .context-ring__progress {
+        transition: stroke-dashoffset 0.4s ease, stroke 0.3s ease;
+      }
+
+      &.is-critical::after {
+        content: '';
+        position: absolute;
+        inset: -3px;
+        border-radius: 50%;
+        border: 2px solid currentColor;
+        color: #f56c6c;
+        animation: pulse-ring 1.5s ease-in-out infinite;
+        pointer-events: none;
       }
     }
 
@@ -2346,6 +2460,37 @@ onUnmounted(() => {
   .tools-status {
     right: 10px;
     max-width: 260px;
+  }
+}
+
+// 压缩确认弹窗样式
+.compact-dialog-body {
+  text-align: center;
+  padding: 10px 0;
+
+  .compact-dialog-usage {
+    margin-bottom: 16px;
+
+    .usage-percent {
+      display: block;
+      font-size: 36px;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+
+    .usage-detail {
+      display: block;
+      font-size: 14px;
+      color: var(--pc-text-secondary);
+    }
+  }
+
+  .compact-dialog-desc {
+    font-size: 13px;
+    color: var(--pc-text-secondary);
+    line-height: 1.6;
+    margin: 0;
   }
 }
 </style>
