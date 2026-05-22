@@ -30,9 +30,7 @@ from app.modules.tools.send_message import (
 )
 from app.modules.tools.config import ConfigTool
 from app.modules.tools.team import TeamCreateTool, TeamDeleteTool
-from app.modules.tools.runner_tools import (
-    RunnerFileReadTool, RunnerFileWriteTool, RunnerFileBrowseTool, RunnerExecTool,
-)
+
 from app.modules.tools.task_create import TaskCreateTool
 from app.modules.tools.task_get import TaskGetTool
 from app.modules.tools.task_list import TaskListTool
@@ -3115,10 +3113,6 @@ def register_builtin_tools(registry: Optional["ToolRegistry"] = None):
     registry.register_class(ConfigTool)
     registry.register_class(TeamCreateTool)
     registry.register_class(TeamDeleteTool)
-    registry.register_class(RunnerFileReadTool)
-    registry.register_class(RunnerFileWriteTool)
-    registry.register_class(RunnerFileBrowseTool)
-    registry.register_class(RunnerExecTool)
     registry.register_class(TaskCreateTool)
     registry.register_class(TaskGetTool)
     registry.register_class(TaskListTool)
