@@ -84,8 +84,8 @@
       <!-- 内容区 -->
       <main class="content">
         <router-view v-slot="{ Component }">
-          <transition name="page" mode="out-in">
-            <component :is="Component" />
+          <transition name="page">
+            <component :is="Component" :key="$route.path" />
           </transition>
         </router-view>
       </main>
