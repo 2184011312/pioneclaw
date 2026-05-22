@@ -77,6 +77,10 @@ from app.core.permission_mode import (
 )
 from app.core.sandbox_policy import resolve_tool_policy
 
+# 新工具系统（ai-agent-toolkit 架构移植）
+from app.modules.tools.types import ToolUse as _ToolUse
+from app.modules.tools.scheduler import partition_tool_calls, run_concurrent_batch
+
 logger = logging.getLogger(__name__)
 
 
@@ -1151,70 +1155,67 @@ class AgentLoop:
         cancel_token: Optional[CancelToken],
         yield_intermediate: bool,
     ) -> List[Dict[str, Any]]:
-        """尝试并行执行所有安全工具。
+        """尝试并行执行安全工具（使用新调度器 partition_tool_calls + run_concurrent_batch）
 
-        如果所有工具都是 parallel_safe，则并行执行并追加结果到 messages。
         返回空列表表示已执行（for 循环跳过），否则返回原始 buffer。
         """
         if not self.tools or len(tool_calls_buffer) < 2:
             return tool_calls_buffer
 
-        # 检查是否所有工具都可并行
-        all_safe = True
-        for tc in tool_calls_buffer:
-            tc_name = tc.get("name", "")
-            tool_instance = self.tools.get_tool(tc_name)
-            if not tool_instance or not getattr(tool_instance, "is_parallel_safe", False):
-                all_safe = False
-                break
+        # 解析参数并构造 ToolUse
+        def _normalize_args(tc_args):
+            if isinstance(tc_args, str):
+                try:
+                    return json.loads(tc_args)
+                except Exception:
+                    return {}
+            elif isinstance(tc_args, list):
+                return {"args": tc_args}
+            elif not isinstance(tc_args, dict):
+                return {}
+            return tc_args
 
-        if not all_safe:
+        def _normalize_id(tc_id):
+            if isinstance(tc_id, list):
+                return str(tc_id[0]) if tc_id else ""
+            return str(tc_id) if tc_id else ""
+
+        tool_uses = []
+        for tc in tool_calls_buffer:
+            tc_id = _normalize_id(tc.get("id", ""))
+            tc_name = tc.get("name", "")
+            tc_args = _normalize_args(tc.get("arguments", {}))
+            if not tc_id:
+                tc_id = self._fallback_tool_call_id(tc_name, tc_args)
+                tc["id"] = tc_id
+            tool_uses.append(_ToolUse(id=tc_id, tool_id=tc_name, input=tc_args))
+
+        # 按 is_read_only + is_concurrency_safe 分区
+        batches = partition_tool_calls(tool_uses, self.tools)
+
+        # 只有全部为单个并发批次时才并行执行
+        if len(batches) != 1 or not batches[0].concurrent:
             return tool_calls_buffer
 
         logger.info(
-            f"Parallel executing {len(tool_calls_buffer)} safe tools: "
+            f"Parallel executing {len(tool_uses)} safe tools via scheduler: "
             f"{[tc.get('name') for tc in tool_calls_buffer]}"
         )
 
-        # 解析所有工具调用参数
-        parsed: List[Tuple[str, str, Dict[str, Any]]] = []
-        for tc in tool_calls_buffer:
-            tc_id = tc.get("id", "")
-            tc_name = tc.get("name", "")
-            tc_args = tc.get("arguments", {})
-
-            if isinstance(tc_id, list):
-                tc_id = str(tc_id[0]) if tc_id else ""
-            elif not isinstance(tc_id, str):
-                tc_id = str(tc_id) if tc_id else ""
-
-            if isinstance(tc_args, str):
-                try:
-                    tc_args = json.loads(tc_args)
-                except Exception:
-                    tc_args = {}
-
-            parsed.append((tc_id, tc_name, tc_args))
-
-        # 并行执行所有工具
-        async def execute_one(tc_id, tc_name, tc_args):
+        async def _execute_one(tool_use: _ToolUse):
             start = time.time()
             try:
-                result = await self._execute_tool(tc_name, tc_args)
-                # Phase 6: 跟踪文件访问
-                self._track_file_access(tc_name, tc_args, result, tc_id)
-                return (tc_id, tc_name, tc_args, result, None, int((time.time() - start) * 1000))
+                result = await self._execute_tool(tool_use.tool_id, tool_use.input)
+                self._track_file_access(tool_use.tool_id, tool_use.input, result, tool_use.id)
+                return (tool_use.id, tool_use.tool_id, tool_use.input, result, None, int((time.time() - start) * 1000))
             except Exception as e:
-                return (tc_id, tc_name, tc_args, None, e, int((time.time() - start) * 1000))
+                return (tool_use.id, tool_use.tool_id, tool_use.input, None, e, int((time.time() - start) * 1000))
 
-        coroutines = [execute_one(tc_id, tc_name, tc_args) for tc_id, tc_name, tc_args in parsed]
-        results = await asyncio.gather(*coroutines)
+        results = await run_concurrent_batch(batches[0].tools, _execute_one)
 
-        # 处理结果并追加到 messages
+        # 处理结果并追加到 messages（保持与原逻辑一致）
         has_failure = False
         for tc_id, tc_name, tc_args, result, error, duration_ms in results:
-            total_tool_calls_local = len(tool_calls_buffer)
-
             if tc_id:
                 self.seen_tool_call_ids.add(tc_id)
 
@@ -1244,7 +1245,6 @@ class AgentLoop:
                 })
             else:
                 if has_failure:
-                    # 错误级联：第一个失败后，其余取消
                     messages.append({
                         "role": "assistant",
                         "content": content_buffer or "",
@@ -1286,8 +1286,7 @@ class AgentLoop:
                     })
 
         if yield_intermediate:
-            elapsed = 0  # We didn't track time, but parallel is faster
-            logger.info(f"Parallel tool execution complete for {len(parsed)} tools")
+            logger.info(f"Parallel tool execution complete for {len(tool_uses)} tools")
 
         return []  # 返回空列表，for 循环跳过
 

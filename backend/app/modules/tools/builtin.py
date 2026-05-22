@@ -30,9 +30,7 @@ from app.modules.tools.send_message import (
 )
 from app.modules.tools.config import ConfigTool
 from app.modules.tools.team import TeamCreateTool, TeamDeleteTool
-from app.modules.tools.runner_tools import (
-    RunnerFileReadTool, RunnerFileWriteTool, RunnerFileBrowseTool, RunnerExecTool,
-)
+
 from app.modules.tools.task_create import TaskCreateTool
 from app.modules.tools.task_get import TaskGetTool
 from app.modules.tools.task_list import TaskListTool
@@ -524,16 +522,25 @@ class ExecTool(BaseTool):
     }
     required = ["command"]
 
+    # Windows CMD 内置命令列表（create_subprocess_exec 无法直接执行这些）
+    _WIN_CMD_BUILTINS = {
+        "dir", "echo", "type", "cd", "chdir", "md", "mkdir", "rd", "rmdir",
+        "del", "erase", "copy", "move", "ren", "rename", "cls", "pause",
+        "ver", "vol", "path", "set", "exit", "start", "assoc", "ftype",
+        "prompt", "title", "color", "date", "time",
+    }
+
     async def execute(self, command: str, **kwargs) -> str:
         # 解析命令为参数列表（避免 shell 注入）
         # Windows 使用 posix=False 避免反斜杠被当作转义符，
         # 否则 C:\Users\file.txt 会被错误切分为 C:Usersfile.txt
         try:
             import sys
-            posix_mode = sys.platform != "win32"
+            is_windows = sys.platform == "win32"
+            posix_mode = not is_windows
             args = shlex.split(command, posix=posix_mode)
             # 非 POSIX 模式会保留引号，这里手动去外层引号以保持行为一致
-            if not posix_mode:
+            if is_windows:
                 args = [a[1:-1] if len(a) >= 2 and a[0] == a[-1] == '"' else a for a in args]
         except ValueError as e:
             return f"错误: 命令解析失败 - {e}"
@@ -558,14 +565,20 @@ class ExecTool(BaseTool):
         workspace.mkdir(parents=True, exist_ok=True)
         cwd = str(workspace)
 
-        try:
+        import sys
+        is_windows = sys.platform == "win32"
+
+        # Windows 兼容性：CMD 内置命令（dir、echo、type 等）无法通过 create_subprocess_exec 直接执行
+        if is_windows and args and args[0].lower() in self._WIN_CMD_BUILTINS:
+            args = ["cmd", "/c", command]
+
+        async def _run_subprocess(cmd_args):
             process = await asyncio.create_subprocess_exec(
-                *args,
+                *cmd_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
             )
-
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=30
@@ -573,21 +586,18 @@ class ExecTool(BaseTool):
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
-                return f"错误: 命令超时 (30秒)"
+                raise asyncio.TimeoutError("命令执行超过 30 秒")
 
             output_parts = []
-
             if stdout:
                 text = stdout.decode('utf-8', errors='replace')
                 text = text.replace('\r\n', '\n').replace('\r', '\n')
                 output_parts.append(text)
-
             if stderr:
                 text = stderr.decode('utf-8', errors='replace')
                 text = text.replace('\r\n', '\n').replace('\r', '\n')
                 if text.strip():
                     output_parts.append(f"STDERR:\n{text}")
-
             if process.returncode != 0:
                 output_parts.append(f"Exit code: {process.returncode}")
 
@@ -596,8 +606,23 @@ class ExecTool(BaseTool):
                 result = result[:5000] + "\n... (输出已截断)"
             return result
 
+        try:
+            return await _run_subprocess(args)
+        except FileNotFoundError as e:
+            # Windows 回退：如果找不到可执行文件，尝试用 cmd /c 包装
+            if is_windows and args[0:1] != ["cmd"]:
+                try:
+                    return await _run_subprocess(["cmd", "/c", command])
+                except FileNotFoundError:
+                    pass
+            return f"错误: 找不到可执行文件 '{args[0]}'，请检查命令是否正确"
+        except asyncio.TimeoutError:
+            return "错误: 命令超时 (30秒)"
         except Exception as e:
-            return f"执行命令错误: {e}"
+            # 确保错误信息永远不会为空：同时输出异常类型和消息
+            err_type = type(e).__name__
+            err_msg = str(e) or "(无详细错误信息)"
+            return f"执行命令错误 [{err_type}]: {err_msg}"
 
 
 class EditFileTool(BaseTool):
@@ -755,6 +780,15 @@ class FileSearchTool(BaseTool):
     async def execute(self, path: str, pattern: str = "*", recursive: bool = True,
                       limit: int = 30, **kwargs) -> str:
         try:
+            from pathlib import Path
+            from app.core.config import settings
+            from app.core.sandbox import validate_path_for_read
+            safe_path = validate_path_for_read(
+                path, Path(settings.WORKSPACE_DIR),
+                allow_sensitive=kwargs.get("_allow_sensitive", False),
+                allow_outside=kwargs.get("_allow_outside", False),
+            )
+            path = str(safe_path)
             if not os.path.isdir(path):
                 return f"错误: 目录不存在 - {path}"
 
@@ -812,6 +846,15 @@ class ListDirTool(BaseTool):
 
     async def execute(self, path: str, limit: int = 50, **kwargs) -> str:
         try:
+            from pathlib import Path
+            from app.core.config import settings
+            from app.core.sandbox import validate_path_for_read
+            safe_path = validate_path_for_read(
+                path, Path(settings.WORKSPACE_DIR),
+                allow_sensitive=kwargs.get("_allow_sensitive", False),
+                allow_outside=kwargs.get("_allow_outside", False),
+            )
+            path = str(safe_path)
             if not os.path.isdir(path):
                 return f"错误: 目录不存在 - {path}"
 
@@ -3070,10 +3113,6 @@ def register_builtin_tools(registry: Optional["ToolRegistry"] = None):
     registry.register_class(ConfigTool)
     registry.register_class(TeamCreateTool)
     registry.register_class(TeamDeleteTool)
-    registry.register_class(RunnerFileReadTool)
-    registry.register_class(RunnerFileWriteTool)
-    registry.register_class(RunnerFileBrowseTool)
-    registry.register_class(RunnerExecTool)
     registry.register_class(TaskCreateTool)
     registry.register_class(TaskGetTool)
     registry.register_class(TaskListTool)
