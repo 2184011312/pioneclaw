@@ -44,7 +44,7 @@ easyocr==1.7.2                  # OCR text extraction from images
 
 # ── Utilities ──────────────────────────────────────────────────
 python-dotenv==1.1.0
-PyYAML==6.0.2
+PyYAML==6.0.3
 tomli==2.4.1                  # TOML parsing
 croniter>=2.0.0               # Cron expression scheduling
 
