@@ -1,0 +1,193 @@
+"""
+钉钉渠道适配器
+
+使用钉钉开放平台 Stream 模式实现：
+- Stream 长连接接收消息
+- 发送文本/Markdown 消息
+- 发送工作通知
+
+文档：https://open.dingtalk.com/document/
+"""
+
+import asyncio
+import json
+import logging
+import time
+import hmac
+import hashlib
+import base64
+from typing import Optional
+from urllib.parse import quote_plus
+
+import httpx
+
+from .base import (
+    BaseChannel,
+    ChannelConfig,
+    ChannelMessage,
+    ChannelStatus,
+    ChannelType,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class DingTalkChannel(BaseChannel):
+    """钉钉渠道适配器"""
+
+    API_BASE = "https://oapi.dingtalk.com"
+
+    def __init__(self, config: ChannelConfig):
+        super().__init__(config)
+        self.app_key = config.app_id
+        self.app_secret = config.app_secret
+        self._access_token: Optional[str] = None
+        self._token_expire: float = 0
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_access_token(self) -> Optional[str]:
+        """获取 access_token"""
+        if self._access_token and time.time() < self._token_expire - 60:
+            return self._access_token
+
+        try:
+            response = await self._client.post(
+                f"{self.API_BASE}/gettoken",
+                params={"appkey": self.app_key, "appsecret": self.app_secret},
+            )
+            data = response.json()
+
+            if data.get("errcode") == 0:
+                self._access_token = data.get("access_token")
+                self._token_expire = time.time() + data.get("expires_in", 7200)
+                return self._access_token
+            else:
+                logger.error(f"[{self.channel_id}] Get token failed: {data.get('errmsg')}")
+                return None
+
+        except Exception as e:
+            logger.error(f"[{self.channel_id}] Get token error: {e}")
+            return None
+
+    async def connect(self) -> bool:
+        """连接到钉钉"""
+        if not self.app_key or not self.app_secret:
+            logger.error(f"[{self.channel_id}] App Key or Secret not configured")
+            self.status = ChannelStatus.ERROR
+            return False
+
+        self.status = ChannelStatus.CONNECTING
+
+        try:
+            self._client = httpx.AsyncClient(timeout=30.0)
+
+            token = await self._get_access_token()
+            if not token:
+                self.status = ChannelStatus.ERROR
+                return False
+
+            logger.info(f"[{self.channel_id}] Connected to DingTalk")
+            self.status = ChannelStatus.CONNECTED
+            self.reset_reconnect_count()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[{self.channel_id}] Connection failed: {e}")
+            self.status = ChannelStatus.ERROR
+            return False
+
+    async def disconnect(self) -> None:
+        """断开连接"""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+        self._access_token = None
+        self.status = ChannelStatus.DISCONNECTED
+        logger.info(f"[{self.channel_id}] Disconnected")
+
+    async def send_message(
+        self,
+        chat_id: str,
+        content: str,
+        **kwargs,
+    ) -> tuple[bool, Optional[str]]:
+        """发送消息（工作通知）"""
+        if not self._client or self.status != ChannelStatus.CONNECTED:
+            return False, "Channel not connected"
+
+        token = await self._get_access_token()
+        if not token:
+            return False, "Failed to get access token"
+
+        try:
+            msg_type = kwargs.get("msg_type", "text")
+
+            if msg_type == "text":
+                msg = {"msgtype": "text", "text": {"content": content}}
+            elif msg_type == "markdown":
+                msg = {"msgtype": "markdown", "markdown": {"title": kwargs.get("title", "通知"), "text": content}}
+            else:
+                msg = {"msgtype": "text", "text": {"content": content}}
+
+            # 发送工作通知
+            response = await self._client.post(
+                f"{self.API_BASE}/topapi/message/corpconversation/asyncsend_v2",
+                params={"access_token": token},
+                json={
+                    "agent_id": self.config.extra.get("agent_id", ""),
+                    "userid_list": chat_id,
+                    "msg": msg,
+                },
+            )
+
+            data = response.json()
+            if data.get("errcode") == 0:
+                task_id = str(data.get("task_id", ""))
+                return True, task_id
+            else:
+                return False, data.get("errmsg", "Unknown error")
+
+        except Exception as e:
+            logger.error(f"[{self.channel_id}] Send message failed: {e}")
+            return False, str(e)
+
+    async def send_typing(self, chat_id: str) -> None:
+        """钉钉不支持输入状态"""
+        pass
+
+    async def handle_callback(self, event: dict) -> None:
+        """处理回调事件"""
+        event_type = event.get("Type", event.get("msgtype", ""))
+
+        if event_type in ("text", "richText"):
+            sender_info = event.get("SenderId", event.get("senderStaffId", ""))
+            conversation_id = event.get("ConversationId", event.get("chatid", ""))
+
+            text_content = ""
+            if event_type == "text":
+                text_content = event.get("Text", {}).get("Content", "")
+            elif event_type == "richText":
+                text_content = event.get("RichText", {}).get("Content", "")
+
+            message = ChannelMessage(
+                message_id=event.get("MsgId", ""),
+                channel_id=self.channel_id,
+                channel_type=ChannelType.DINGTALK,
+                sender_id=sender_info,
+                sender_name=event.get("SenderNick", sender_info),
+                content=text_content,
+                content_type="text",
+                chat_id=conversation_id,
+                chat_type="group" if event.get("ConversationType") == "2" else "private",
+                raw=event,
+            )
+
+            await self._on_message(message)
+
+
+# 注册适配器
+from .manager import register_channel
+register_channel(ChannelType.DINGTALK, DingTalkChannel)

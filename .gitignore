@@ -1,0 +1,56 @@
+# Environment & Secrets
+.env
+*.env
+!.env.example         # 模板文件可以提交
+token.txt
+*.token
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / Frontend
+node_modules/
+dist/
+
+# Docker
+.env.local
+.env.production
+
+# Logs
+*.log
+
+# Generated reports and artifacts
+/backend/screenshots/
+/backend/workspace/releases/
+/frontend/playwright-report/
+/frontend/test-results/
+
+# Skills (installed by skillhub)
+/skills/

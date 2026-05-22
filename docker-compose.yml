@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # ── Backend Service ───────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pioneclaw-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:?DB_USER must be set}:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/${DB_NAME:-pioneclaw}
+      - SECRET_KEY=${SECRET_KEY:?JWT SECRET_KEY must be set}
+      - REFRESH_SECRET_KEY=${REFRESH_SECRET_KEY:?JWT REFRESH_SECRET_KEY must be set}
+      - RESET_SECRET_KEY=${RESET_SECRET_KEY:?JWT RESET_SECRET_KEY must be set}
+      - DEBUG=${DEBUG:-false}
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost","http://localhost:80","http://localhost:5173"]}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend/.env:/app/.env:ro
+    restart: unless-stopped
+    networks:
+      - pioneclaw-network
+
+  # ── Frontend Service ──────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pioneclaw-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - pioneclaw-network
+
+  # ── Database Service ───────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: pioneclaw-db
+    environment:
+      - POSTGRES_USER=${DB_USER:?DB_USER must be set}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set}
+      - POSTGRES_DB=${DB_NAME:-pioneclaw}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-pioneclaw}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pioneclaw-network
+
+  # ── Redis (Optional, for caching) ─────────────────────────────
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: pioneclaw-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - pioneclaw-network
+
+volumes:
+  postgres_data:
+  # redis_data:
+
+networks:
+  pioneclaw-network:
+    driver: bridge

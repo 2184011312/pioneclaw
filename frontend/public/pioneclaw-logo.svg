@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <defs>
+    <!-- 主渐变 - 科技蓝紫 -->
+    <linearGradient id="mainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="50%" style="stop-color:#8b5cf6"/>
+      <stop offset="100%" style="stop-color:#a855f7"/>
+    </linearGradient>
+    
+    <!-- 内部渐变 - 亮色 -->
+    <linearGradient id="innerGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#c4b5fd"/>
+      <stop offset="100%" style="stop-color:#ddd6fe"/>
+    </linearGradient>
+    
+    <!-- 光晕效果 -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- 阴影 -->
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#6366f1" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  
+  <!-- 背景圆角正方形 -->
+  <rect x="10" y="10" width="100" height="100" rx="22" ry="22" 
+        fill="url(#mainGradient)" filter="url(#shadow)"/>
+  
+  <!-- 装饰性圆环 -->
+  <circle cx="60" cy="60" r="38" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2"/>
+  <circle cx="60" cy="60" r="32" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
+  
+  <!-- 主图形 - 机器人/智能体抽象形态 -->
+  <g filter="url(#glow)">
+    <!-- 中心方块 - 代表 Square -->
+    <rect x="45" y="45" width="30" height="30" rx="6" ry="6" 
+          fill="url(#innerGradient)" opacity="0.95"/>
+    
+    <!-- 连接节点 - 代表网络/智能 -->
+    <circle cx="60" cy="60" r="8" fill="#fff" opacity="0.9"/>
+    
+    <!-- 四角延伸线 - 代表四方连接 -->
+    <line x1="60" y1="45" x2="60" y2="28" stroke="rgba(255,255,255,0.7)" stroke-width="3" stroke-linecap="round"/>
+    <line x1="60" y1="75" x2="60" y2="92" stroke="rgba(255,255,255,0.7)" stroke-width="3" stroke-linecap="round"/>
+    <line x1="45" y1="60" x2="28" y2="60" stroke="rgba(255,255,255,0.7)" stroke-width="3" stroke-linecap="round"/>
+    <line x1="75" y1="60" x2="92" y2="60" stroke="rgba(255,255,255,0.7)" stroke-width="3" stroke-linecap="round"/>
+    
+    <!-- 端点圆点 -->
+    <circle cx="60" cy="28" r="4" fill="#fff"/>
+    <circle cx="60" cy="92" r="4" fill="#fff"/>
+    <circle cx="28" cy="60" r="4" fill="#fff"/>
+    <circle cx="92" cy="60" r="4" fill="#fff"/>
+    
+    <!-- 对角线装饰 -->
+    <line x1="48" y1="48" x2="35" y2="35" stroke="rgba(255,255,255,0.4)" stroke-width="2" stroke-linecap="round"/>
+    <line x1="72" y1="48" x2="85" y2="35" stroke="rgba(255,255,255,0.4)" stroke-width="2" stroke-linecap="round"/>
+    <line x1="48" y1="72" x2="35" y2="85" stroke="rgba(255,255,255,0.4)" stroke-width="2" stroke-linecap="round"/>
+    <line x1="72" y1="72" x2="85" y2="85" stroke="rgba(255,255,255,0.4)" stroke-width="2" stroke-linecap="round"/>
+    
+    <!-- 对角端点 -->
+    <circle cx="35" cy="35" r="3" fill="rgba(255,255,255,0.6)"/>
+    <circle cx="85" cy="35" r="3" fill="rgba(255,255,255,0.6)"/>
+    <circle cx="35" cy="85" r="3" fill="rgba(255,255,255,0.6)"/>
+    <circle cx="85" cy="85" r="3" fill="rgba(255,255,255,0.6)"/>
+  </g>
+  
+  <!-- 高光效果 -->
+  <ellipse cx="45" cy="35" rx="20" ry="8" fill="rgba(255,255,255,0.15)"/>
+</svg>
