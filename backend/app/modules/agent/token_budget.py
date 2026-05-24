@@ -114,57 +114,6 @@ class TokenBudget:
 
 
 # ---------------------------------------------------------------------------
-# 模型 context_window 映射
-# ---------------------------------------------------------------------------
-
-_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # Anthropic
-    "claude-3-opus": 200_000,
-    "claude-3-sonnet": 200_000,
-    "claude-3-haiku": 200_000,
-    "claude-3-5-sonnet": 200_000,
-    "claude-3-7-sonnet": 200_000,
-    # OpenAI
-    "gpt-4o": 128_000,
-    "gpt-4o-mini": 128_000,
-    "gpt-4-turbo": 128_000,
-    "gpt-4": 8_192,
-    "gpt-3.5-turbo": 16_384,
-    # DeepSeek
-    "deepseek-chat": 64_000,
-    "deepseek-coder": 64_000,
-    "deepseek-reasoner": 64_000,
-    # Qwen
-    "qwen-turbo": 128_000,
-    "qwen-plus": 128_000,
-    "qwen-max": 32_000,
-    # 默认
-    "default": 128_000,
-}
-
-
-def get_context_window_for_model(model: str | None) -> int:
-    """根据模型名称获取上下文窗口大小
-
-    匹配策略：按前缀长度降序匹配，避免短前缀误匹配长模型名
-    （例如 \"gpt-4\" 不应匹配 \"gpt-4o-mini\"）
-    """
-    if not model:
-        return _MODEL_CONTEXT_WINDOWS["default"]
-    model_lower = model.lower()
-    # 按前缀长度降序，确保更精确的匹配优先
-    sorted_prefixes = sorted(
-        _MODEL_CONTEXT_WINDOWS.items(),
-        key=lambda item: len(item[0]),
-        reverse=True,
-    )
-    for prefix, window in sorted_prefixes:
-        if prefix in model_lower:
-            return window
-    return _MODEL_CONTEXT_WINDOWS["default"]
-
-
-# ---------------------------------------------------------------------------
 # Token 估算
 # ---------------------------------------------------------------------------
 

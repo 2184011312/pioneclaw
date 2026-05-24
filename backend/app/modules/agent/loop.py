@@ -81,7 +81,6 @@ from app.core.sandbox_policy import resolve_tool_policy
 from app.modules.agent.token_budget import (
     TokenBudget,
     estimate_tokens,
-    get_context_window_for_model,
 )
 from app.modules.llm.retry import LLMCallRetrier, RetryConfig
 from app.modules.tools.scheduler import partition_tool_calls, run_concurrent_batch
@@ -360,9 +359,17 @@ class AgentLoop:
             self._key_rotator = get_key_rotator(provider_id, self._api_keys)
 
         # Token 预算（Phase 2: 上下文管理）
-        # issue #63: 优先使用平台 AI 配置中的 context_window，
-        # 未配置时回退到模型预设映射
-        resolved_context_window = context_window or get_context_window_for_model(self.model)
+        # 统一创建：由 Loop 根据 model_config 生成唯一预算对象，
+        # 注入 CompressionService 和 Compactor，消除双轨制。
+        # context_window 完全由 AIModelConfig 配置决定，不再硬编码模型映射。
+        if not context_window or context_window <= 0:
+            logger.warning(
+                f"Model {self.model} has no context_window configured, using fallback 128000. "
+                "Please set context_window in AIConfig."
+            )
+            resolved_context_window = 128000
+        else:
+            resolved_context_window = context_window
         self._token_budget = TokenBudget(
             context_window=resolved_context_window,
             max_output_tokens=self.max_tokens,
@@ -371,6 +378,12 @@ class AgentLoop:
             f"TokenBudget initialized: context_window={resolved_context_window}, "
             f"compact_threshold={self._token_budget.compact_threshold}"
         )
+
+        # 注入统一预算到压缩服务（改进项 1：消除双轨制）
+        if self._compression_service is not None:
+            self._compression_service.budget = self._token_budget
+        if self._compactor is not None and self._compactor.config is not None:
+            self._compactor.config.token_budget = self._token_budget
 
         # LLM 调用重试器（Phase 2: 统一重试体系）
         self._llm_retrier = LLMCallRetrier(
@@ -563,6 +576,10 @@ class AgentLoop:
         self.last_tool_results = {}  # 清空上次的工具调用结果
         self.last_tool_durations = {}  # 清空上次的工具调用耗时
 
+        # 改进项 5：截断自动续传计数器
+        continuation_attempts = 0
+        MAX_CONTINUATIONS = 3
+
         try:
             while iteration < runtime_max_iterations:
                 iteration += 1
@@ -726,11 +743,11 @@ class AgentLoop:
                             yield f"<!--THINKING:{chunk['reasoning_content']}-->"
 
                     if chunk.get("error"):
-                        # prompt_too_long：触发应急压缩后重试（每轮最多 3 次）
+                        # prompt_too_long：触发应急压缩后重试（改进项 5：5 级恢复）
                         if (
                             self._compression_service
                             and self._is_prompt_too_long(chunk["error"])
-                            and round_ptl_attempts < 3
+                            and round_ptl_attempts < 5
                         ):
                             prompt_too_long_triggered = True
                             break
@@ -742,7 +759,7 @@ class AgentLoop:
                     round_ptl_attempts += 1
                     logger.warning(
                         f"Prompt too long, emergency compact "
-                        f"attempt {round_ptl_attempts}/3 (round {iteration})"
+                        f"attempt {round_ptl_attempts}/5 (round {iteration})"
                     )
                     messages = await self._compression_service.emergency_compact(
                         messages, attempt=round_ptl_attempts
@@ -790,6 +807,34 @@ class AgentLoop:
 
                 if content_buffer:
                     final_content = content_buffer
+
+                # 改进项 5：截断自动续传
+                if finish_reason == "length" and continuation_attempts < MAX_CONTINUATIONS:
+                    continuation_attempts += 1
+                    logger.info(
+                        f"Output truncated (length), continuation attempt "
+                        f"{continuation_attempts}/{MAX_CONTINUATIONS}"
+                    )
+                    # 将已输出内容追加为 assistant 消息，再发续传请求
+                    assistant_msg = {"role": "assistant", "content": content_buffer}
+                    if reasoning_content_buffer:
+                        assistant_msg["reasoning_content"] = reasoning_content_buffer
+                    messages.append(assistant_msg)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "[系统提示：你的上一条回复因长度限制被截断，请从断点处继续完成输出]",
+                        }
+                    )
+                    # 标记 assistant 响应时间（Autocompact）
+                    if self._compression_service:
+                        self._compression_service.mark_assistant_response()
+                    # 续传前压缩上下文，防止持续膨胀
+                    if self._compression_service:
+                        messages = await self._compression_service.auto_prune(
+                            messages, self.provider
+                        )
+                    continue
 
                 # 如果没有工具调用，结束循环
                 if not tool_calls_buffer:
@@ -1138,6 +1183,10 @@ class AgentLoop:
                             f"Tool processing error: {tool_error}", exc_info=True
                         )
                         yield f"\n\n[工具处理错误: {tool_error}]"
+
+            # 标记 assistant 响应时间（Autocompact 时间触发）
+            if self._compression_service:
+                self._compression_service.mark_assistant_response()
 
             # 检查是否达到限制
             if iteration >= runtime_max_iterations:

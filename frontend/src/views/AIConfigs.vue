@@ -186,7 +186,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { useUserStore } from '@/stores/user'
@@ -232,10 +232,49 @@ const form = reactive({
   base_url: '',
   tier: 'sonnet',
   api_key: '',
-  context_window: 128000,
+  context_window: 0,
   max_tokens: 4096,
   temperature: 0.7,
   is_default: false,
+})
+
+// 根据 model_name 自动推荐 context_window（仅当用户未手动设置时）
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Anthropic
+  'claude-3-opus': 200000,
+  'claude-3-sonnet': 200000,
+  'claude-3-haiku': 200000,
+  'claude-3-5-sonnet': 200000,
+  'claude-3-7-sonnet': 200000,
+  // OpenAI
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
+  'gpt-4-turbo': 128000,
+  'gpt-4': 8192,
+  'gpt-3.5-turbo': 16384,
+  // DeepSeek
+  'deepseek-chat': 64000,
+  'deepseek-coder': 64000,
+  'deepseek-reasoner': 64000,
+  // Qwen
+  'qwen-turbo': 128000,
+  'qwen-plus': 128000,
+  'qwen-max': 32000,
+}
+
+watch(() => form.model_name, (newModel) => {
+  if (!newModel) return
+  const normalized = newModel.trim().toLowerCase()
+  // 只有未手动设置时才自动填充（0 或旧默认值 128000 视为未设置）
+  if (form.context_window !== 0 && form.context_window !== 128000) return
+  for (const [prefix, window] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
+    if (normalized.includes(prefix)) {
+      form.context_window = window
+      return
+    }
+  }
+  // 未知模型默认 128k
+  form.context_window = 128000
 })
 
 const rules = {
@@ -296,7 +335,7 @@ const showCreateDialog = () => {
     model_name: '',
     base_url: '',
     api_key: '',
-    context_window: 128000,
+    context_window: 0,
     max_tokens: 4096,
     temperature: 0.7,
     is_default: false,

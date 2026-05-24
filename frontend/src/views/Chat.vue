@@ -340,10 +340,10 @@
     </div>
   </div>
 
-  <!-- 压缩上下文确认弹窗 -->
+  <!-- 整理对话历史确认弹窗 -->
   <el-dialog
     v-model="showCompactDialog"
-    title="压缩上下文"
+    title="整理对话历史"
     width="420px"
     align-center
   >
@@ -357,7 +357,7 @@
         </span>
       </div>
       <p class="compact-dialog-desc">
-        压缩将保留核心内容并生成摘要，可以显著减少 token 消耗并提升响应速度。
+        将保留核心内容并生成摘要，减少 token 消耗并提升响应速度。
       </p>
     </div>
     <template #footer>
@@ -417,10 +417,10 @@ const {
 let lastScrollTime = 0
 const SCROLL_THROTTLE_MS = 200
 
-// 包装 dispatch：拦截 done 事件保存 context_usage，流式中自动滚动
+// 包装 dispatch：拦截 done 事件保存 context_report，流式中自动滚动
 const wrappedDispatch = (data: StreamRealtimeMessage) => {
-  if (data.type === 'done' && data.context_usage) {
-    contextUsage.value = data.context_usage
+  if (data.type === 'done' && (data as any).context_report) {
+    contextUsage.value = (data as any).context_report
   }
   dispatchStreamEvent(data)
   // 流式输出过程中自动滚动到底部（节流 200ms，避免高频 DOM 查询）
@@ -614,7 +614,7 @@ function cancelCurrentTask() {
 const slashCommands = [
   { command: '/new', description: $t('chat.newChat'), action: 'new' },
   { command: '/clear', description: $t('chat.slashClear'), action: 'clear' },
-  { command: '/compact', description: '压缩上下文', action: 'compact' },
+  { command: '/compact', description: '整理对话历史', action: 'compact' },
   { command: '/history', description: $t('chat.chatHistoryInSidebar'), action: 'history' },
   { command: '/model', description: $t('chat.slashModels'), action: 'model' },
   { command: '/system', description: $t('chat.slashSystem'), action: 'system' },
@@ -673,7 +673,7 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const sidebarCollapsed = ref(false) // 左侧栏折叠状态
 const searchKeyword = ref('')
 const contextUsage = ref<any>(null)  // 上下文使用率信息
-const showCompactDialog = ref(false)  // 压缩确认弹窗
+const showCompactDialog = ref(false)  // 整理对话历史确认弹窗
 const expandedToolCalls = ref<Set<string>>(new Set())  // 展开的工具调用
 const expandedThinking = ref<Set<number>>(new Set())  // 展开的思考过程
 
@@ -727,6 +727,7 @@ const STATUS_LABEL_MAP: Record<string, string> = {
 }
 
 // 上下文使用率状态（用于 UI 提示）
+// 适配新的 context_report 结构，同时保持对旧 context_usage 的向后兼容
 const contextUsageStatus = computed(() => {
   const u = contextUsage.value
   if (!u) return null
@@ -806,7 +807,12 @@ async function postWithFallback(url: string, body: any): Promise<void> {
 async function persistMessage(conv: Conversation, role: string, content: string, toolCalls?: any[], reasoningContent?: string) {
   const params: any = { role, content }
   if (toolCalls && toolCalls.length > 0) {
-    params.tool_calls = JSON.stringify(toolCalls)
+    // 截断过大的 tool result，避免请求体过大导致保存失败
+    const trimmed = toolCalls.map((tc) => ({
+      ...tc,
+      result: tc.result && tc.result.length > 5000 ? tc.result.slice(0, 5000) + '...[truncated]' : tc.result,
+    }))
+    params.tool_calls = JSON.stringify(trimmed)
   }
   if (reasoningContent) {
     params.reasoning_content = reasoningContent
@@ -1043,7 +1049,10 @@ async function selectConversation(conv: Conversation) {
   try {
     const res = await api.get(`/chat/sessions/${conv.id}`)
     // 加载会话时同步显示上下文用量（后端估算值，发送新消息后会被真实值覆盖）
-    if (res.data?.context_usage) {
+    if (res.data?.context_report) {
+      contextUsage.value = res.data.context_report
+    } else if (res.data?.context_usage) {
+      // 向后兼容旧字段
       contextUsage.value = res.data.context_usage
     }
     if (res.data?.messages && res.data.messages.length > 0) {
@@ -1620,7 +1629,10 @@ onMounted(async () => {
     try {
       const res = await api.get(`/chat/sessions/${firstConv.id}`)
       // 加载会话时同步显示上下文用量
-      if (res.data?.context_usage) {
+      if (res.data?.context_report) {
+        contextUsage.value = res.data.context_report
+      } else if (res.data?.context_usage) {
+        // 向后兼容旧字段
         contextUsage.value = res.data.context_usage
       }
       if (res.data?.messages && res.data.messages.length > 0) {
@@ -2511,6 +2523,139 @@ onUnmounted(() => {
         .el-button--primary {
           padding: 8px 20px;
         }
+      }
+    }
+
+    // 上下文详情面板
+    .context-detail-panel {
+      margin-bottom: 12px;
+      padding: 12px 16px;
+      background: var(--pc-bg-surface);
+      border: 1px solid var(--pc-border);
+      border-radius: var(--pc-radius-md);
+      animation: slideDown 0.2s ease;
+
+      @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      .context-detail-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+
+        .context-detail-title {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--pc-text-primary);
+        }
+      }
+
+      .context-detail-section {
+        margin-bottom: 12px;
+
+        &:last-child {
+          margin-bottom: 0;
+        }
+
+        .section-label {
+          font-size: 12px;
+          color: var(--pc-text-muted);
+          margin-bottom: 8px;
+          font-weight: 500;
+        }
+      }
+
+      .role-bars {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+
+        .role-bar-item {
+          .role-bar-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+
+            .role-name {
+              font-size: 12px;
+              color: var(--pc-text-secondary);
+            }
+
+            .role-count {
+              font-size: 11px;
+              color: var(--pc-text-muted);
+              font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            }
+          }
+        }
+      }
+
+      .tool-stats {
+        display: flex;
+        gap: 16px;
+
+        .tool-stat-item {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          min-width: 60px;
+
+          .tool-stat-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--pc-text-primary);
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+          }
+
+          .tool-stat-label {
+            font-size: 11px;
+            color: var(--pc-text-muted);
+            margin-top: 2px;
+          }
+        }
+      }
+
+      .threshold-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+
+        .threshold-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+
+          .threshold-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+          }
+
+          .threshold-name {
+            font-size: 12px;
+            color: var(--pc-text-secondary);
+            flex: 1;
+          }
+
+          .threshold-value {
+            font-size: 11px;
+            color: var(--pc-text-muted);
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+          }
+        }
+      }
+
+      .context-detail-footer {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--pc-border);
+        display: flex;
+        justify-content: flex-end;
       }
     }
   }

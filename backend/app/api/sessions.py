@@ -42,18 +42,19 @@ async def _resolve_session_context_window(
                 .limit(1)
             )
             cw = model_res.scalar()
-            if cw:
+            if cw is not None and cw > 0:
                 return cw
 
-    # 无 Agent 或匹配失败：取活跃配置中最大的 context_window
+    # 无 Agent 或匹配失败：取活跃配置中最大的 context_window（排除 0）
     max_res = await db.execute(
         select(AIModelConfig.context_window)
         .where(AIModelConfig.is_active)
+        .where(AIModelConfig.context_window > 0)
         .order_by(AIModelConfig.context_window.desc())
         .limit(1)
     )
     cw = max_res.scalar()
-    return cw if cw else DEFAULT_CONTEXT_WINDOW
+    return cw if cw is not None else DEFAULT_CONTEXT_WINDOW
 
 
 def _estimate_tokens(msgs: list[SessionMessage]) -> int:
@@ -122,8 +123,45 @@ async def get_session(
     input_tokens = _estimate_tokens(messages)
     budget = TokenBudget(context_window=context_window)
     context_usage = budget.to_dict(input_tokens)
+
+    # 角色分布和工具结果统计（与 SSE done 事件中的 context_report 格式对齐）
+    role_counts: dict[str, int] = {}
+    role_tokens: dict[str, int] = {}
+    tool_result_count = 0
+    tool_result_tokens = 0
+    tool_call_count = 0  # assistant 消息中的 tool_calls 数量
+    for m in messages:
+        role = m.role or "unknown"
+        content_len = len(m.content or "") + len(m.reasoning_content or "")
+        est = content_len // 4
+        role_counts[role] = role_counts.get(role, 0) + 1
+        role_tokens[role] = role_tokens.get(role, 0) + est
+        if role == "tool":
+            tool_result_count += 1
+            tool_result_tokens += est
+        # 统计 assistant 消息中的 tool_calls（调用请求）
+        if role == "assistant" and m.tool_calls:
+            tool_call_count += len(m.tool_calls)
+    # 工具统计优先展示 tool_calls 次数（更直观），无 tool_calls 时展示 tool 结果消息数
+    display_tool_count = tool_call_count if tool_call_count > 0 else tool_result_count
+    display_tool_tokens = tool_result_tokens
+
+    context_report = {
+        **context_usage,
+        "total_messages": len(messages),
+        "output_tokens": None,  # get_session 无法获取 output_tokens，与 SSE 事件区分
+        "source": "estimated",
+        "role_distribution": {
+            role: {"count": role_counts.get(role, 0), "tokens": role_tokens.get(role, 0)}
+            for role in set(list(role_counts.keys()) + ["system", "user", "assistant", "tool"])
+        },
+        "tool_results": {
+            "count": display_tool_count,
+            "tokens": display_tool_tokens,
+        },
+    }
     logger.info(
-        f"[get_session] session={session_id} messages={len(messages)} input_tokens={input_tokens} context_usage={context_usage}"
+        f"[get_session] session={session_id} messages={len(messages)} input_tokens={input_tokens}"
     )
 
     return {
@@ -132,7 +170,8 @@ async def get_session(
         "workspace_path": session.workspace_path,
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
-        "context_usage": context_usage,
+        "context_report": context_report,
+        "context_usage": context_usage,  # 向后兼容
         "messages": [
             {
                 "id": m.id,
@@ -240,12 +279,20 @@ async def save_message(
         _check_depth(data, 1)
         return data
 
+    # 解析 tool_calls，失败时降级为 None 避免整单保存失败
+    parsed_tool_calls = None
+    if body.tool_calls:
+        try:
+            parsed_tool_calls = _safe_loads_tool_calls(body.tool_calls)
+        except Exception as e:
+            logger.warning(f"save_message: failed to parse tool_calls for session={session_id}, error={e}")
+
     msg = SessionMessage(
         session_id=session_id,
         role=body.role,
         content=body.content or "",
         reasoning_content=body.reasoning_content or None,
-        tool_calls=_safe_loads_tool_calls(body.tool_calls) if body.tool_calls else None,
+        tool_calls=parsed_tool_calls,
     )
     db.add(msg)
     session.message_count = (session.message_count or 0) + 1

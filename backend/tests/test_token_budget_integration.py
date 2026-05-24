@@ -2,7 +2,7 @@
 
 测试内容：
 1. estimate_tokens 函数
-2. get_context_window_for_model 模型映射
+2. TokenBudget 阈值计算
 3. TokenBudget 在 AgentLoop 中的初始化
 """
 
@@ -12,7 +12,6 @@ from app.modules.agent.loop import AgentLoop
 from app.modules.agent.token_budget import (
     TokenBudget,
     estimate_tokens,
-    get_context_window_for_model,
 )
 
 
@@ -82,33 +81,6 @@ class TestEstimateTokens:
         assert estimate_tokens(messages) == 2
 
 
-class TestGetContextWindowForModel:
-    """测试模型上下文窗口映射"""
-
-    def test_claude_models(self):
-        assert get_context_window_for_model("claude-3-opus") == 200_000
-        assert get_context_window_for_model("claude-3-sonnet") == 200_000
-        assert get_context_window_for_model("claude-3-5-sonnet-20241022") == 200_000
-
-    def test_gpt4o_models(self):
-        assert get_context_window_for_model("gpt-4o") == 128_000
-        assert get_context_window_for_model("gpt-4o-mini") == 128_000
-
-    def test_deepseek_models(self):
-        assert get_context_window_for_model("deepseek-chat") == 64_000
-        assert get_context_window_for_model("deepseek-reasoner") == 64_000
-
-    def test_unknown_model(self):
-        assert get_context_window_for_model("unknown-model-v1") == 128_000
-
-    def test_none_model(self):
-        assert get_context_window_for_model(None) == 128_000
-
-    def test_case_insensitive(self):
-        assert get_context_window_for_model("GPT-4O") == 128_000
-        assert get_context_window_for_model("Claude-3-Opus") == 200_000
-
-
 class TestTokenBudgetIntegration:
     """测试 TokenBudget 集成到 AgentLoop"""
 
@@ -123,6 +95,7 @@ class TestTokenBudgetIntegration:
             provider=FakeProvider(),
             model="gpt-4o",
             max_tokens=4096,
+            context_window=128_000,
         )
 
         assert loop._token_budget is not None
@@ -131,7 +104,7 @@ class TestTokenBudgetIntegration:
 
     @pytest.mark.asyncio
     async def test_agent_loop_claude_model_window(self):
-        """Claude 模型应使用 200K 窗口"""
+        """Claude 模型通过显式 context_window 使用 200K 窗口"""
 
         class FakeProvider:
             pass
@@ -140,9 +113,26 @@ class TestTokenBudgetIntegration:
             provider=FakeProvider(),
             model="claude-3-sonnet",
             max_tokens=4096,
+            context_window=200_000,
         )
 
         assert loop._token_budget.context_window == 200_000
+
+    @pytest.mark.asyncio
+    async def test_agent_loop_fallback_window_when_zero(self):
+        """context_window=0 时使用 fallback 默认值 128000"""
+
+        class FakeProvider:
+            pass
+
+        loop = AgentLoop(
+            provider=FakeProvider(),
+            model="some-model",
+            max_tokens=4096,
+            context_window=0,
+        )
+
+        assert loop._token_budget.context_window == 128_000
 
     def test_token_budget_thresholds(self):
         """测试阈值计算"""

@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.auth import get_current_active_user
 from app.core import get_db
@@ -397,7 +398,6 @@ async def react_chat(
     from app.modules.agent.compression_service import ContextCompressionService
     from app.modules.agent.context import ContextBuilder, PersonaConfig
     from app.modules.agent.context_pruner import ContextPruner
-    from app.modules.agent.token_budget import TokenBudget
     from app.modules.tools import ToolRegistry, register_builtin_tools
 
     # 创建工具注册表
@@ -411,7 +411,9 @@ async def react_chat(
     from app.models import Workspace
 
     ws_result = await db.execute(
-        select(Workspace).where(
+        select(Workspace)
+        .options(selectinload(Workspace.organization))
+        .where(
             Workspace.owner_id == current_user.id, Workspace.is_default
         )
     )
@@ -427,19 +429,19 @@ async def react_chat(
     provider = SimpleLLMProvider(config=config)
 
     # Context 压缩组件（Phase 1: 统一入口）
+    # TokenBudget 由 AgentLoop 统一创建注入，此处不再重复创建
     from app.modules.agent.file_tracker import FileTracker
 
-    token_budget = TokenBudget(context_window=config.context_window)
     context_pruner = ContextPruner()
     file_tracker = FileTracker(max_files=5, max_tokens=50_000)
     compactor = Compactor(
-        config=CompactionConfig(context_window=config.context_window),
+        config=CompactionConfig(),
         llm_client=provider,
         user_id=current_user.id,
         session_id=request.session_id,
     )
     compression_service = ContextCompressionService(
-        budget=token_budget,
+        budget=None,  # 由 AgentLoop 注入统一预算
         compactor=compactor,
         context_pruner=context_pruner,
         file_tracker=file_tracker,
@@ -675,10 +677,11 @@ async def react_chat_stream(
     from app.modules.agent.compactor import Compactor as C
     from app.modules.agent.compression_service import ContextCompressionService
     from app.modules.agent.context_pruner import ContextPruner as CP
-    from app.modules.agent.token_budget import TokenBudget
 
     ws_result = await db.execute(
-        select(Workspace).where(
+        select(Workspace)
+        .options(selectinload(Workspace.organization))
+        .where(
             Workspace.owner_id == current_user.id, Workspace.is_default
         )
     )
@@ -694,19 +697,19 @@ async def react_chat_stream(
     provider.fast_mode = request.fast_mode
 
     # Context 压缩组件（Phase 1: 统一入口）
-    token_budget = TokenBudget(context_window=config.context_window)
+    # TokenBudget 由 AgentLoop 统一创建注入，此处不再重复创建
     context_pruner = CP()
     from app.modules.agent.file_tracker import FileTracker
 
     file_tracker = FileTracker(max_files=5, max_tokens=50_000)
     compactor = C(
-        config=CC(context_window=config.context_window),
+        config=CC(),
         llm_client=provider,
         user_id=current_user.id,
         session_id=request.session_id,
     )
     compression_service = ContextCompressionService(
-        budget=token_budget,
+        budget=None,  # 由 AgentLoop 注入统一预算
         compactor=compactor,
         context_pruner=context_pruner,
         file_tracker=file_tracker,
@@ -717,6 +720,7 @@ async def react_chat_stream(
         tools=tool_registry,
         system_prompt=system_prompt,
         model=config.model_name,
+        context_window=config.context_window,
         max_iterations=request.max_iterations,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
@@ -884,6 +888,27 @@ async def react_chat_stream(
 
             # 发送完成事件
             input_tokens = provider.last_input_tokens or 0
+            # 构建上下文可视化报告（改进项 6）
+            # 重建 messages（与 AgentLoop 内部一致）用于报告
+            report_messages = list(context) if context else []
+            if system_prompt:
+                report_messages.insert(0, {"role": "system", "content": system_prompt})
+            report_messages.append({"role": "user", "content": request.message})
+            context_report = (
+                compression_service.build_context_report(
+                    report_messages, provider
+                )
+                if compression_service
+                else {}
+            )
+            # 向后兼容：保留 context_usage 字段
+            backward_compatible_usage = {
+                "input_tokens": input_tokens,
+                "output_tokens": provider.last_output_tokens,
+                "context_window": context_report.get("context_window", 0),
+                "usage_percent": context_report.get("usage_percent", 0),
+                "status": context_report.get("status", "unknown"),
+            }
             done_event = {
                 "type": "done",
                 "thinking_content": thinking_buffer if thinking_buffer else None,
@@ -891,7 +916,8 @@ async def react_chat_stream(
                 "latency_ms": latency_ms,
                 "input_tokens": input_tokens,
                 "output_tokens": provider.last_output_tokens,
-                "context_usage": token_budget.to_dict(input_tokens),
+                "context_report": context_report,
+                "context_usage": backward_compatible_usage,  # 向后兼容
             }
             yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
 
@@ -944,20 +970,19 @@ async def compact_context(
     from app.modules.agent.compactor import CompactionConfig, Compactor
     from app.modules.agent.compression_service import ContextCompressionService
     from app.modules.agent.context_pruner import ContextPruner
-    from app.modules.agent.token_budget import TokenBudget
     from app.modules.llm import SimpleLLMProvider
 
     provider = SimpleLLMProvider(config=config)
 
-    token_budget = TokenBudget(context_window=config.context_window)
+    # TokenBudget 由 AgentLoop 统一创建注入，manual_compact 不依赖阈值
     context_pruner = ContextPruner()
     compactor = Compactor(
-        config=CompactionConfig(context_window=config.context_window),
+        config=CompactionConfig(),
         llm_client=provider,
         user_id=current_user.id,
     )
     compression_service = ContextCompressionService(
-        budget=token_budget,
+        budget=None,  # manual_compact 忽略阈值
         compactor=compactor,
         context_pruner=context_pruner,
     )

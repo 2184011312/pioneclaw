@@ -11,6 +11,7 @@ Compactor - 对话压缩和上下文管理
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ class CompactionConfig:
     阈值策略（对标 Claude Code）：
     - 日常 context 控制由 Snip + MicroCompact 承担
     - Compactor 是最后防线，只在接近模型上下文上限时才触发
-    - token_threshold = context_window - buffer_tokens
+    - token_threshold 委托外部 TokenBudget，无 TokenBudget 时回退到本地计算
     """
 
     # 模型上下文窗口大小，从 AI 配置读取
@@ -190,13 +191,18 @@ class CompactionConfig:
     # 是否使用递归总结
     use_recursive_summary: bool = True
 
+    # 外部 TokenBudget（统一阈值时注入，优先使用）
+    token_budget: Any = None
+
     @property
     def token_threshold(self) -> int:
-        """触发压缩的 token 阈值 = context_window - effective_buffer
+        """触发压缩的 token 阈值。
 
-        小上下文模型（context_window <= buffer_tokens）自动缩小 buffer
-        到窗口的 10%，避免阈值变成负数。
+        优先使用外部 TokenBudget.compact_threshold，
+        未注入时回退到本地计算（context_window - buffer_tokens）。
         """
+        if self.token_budget is not None:
+            return self.token_budget.compact_threshold
         effective_buffer = self.buffer_tokens
         if self.context_window <= self.buffer_tokens:
             effective_buffer = max(1, self.context_window // 10)

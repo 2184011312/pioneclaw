@@ -386,7 +386,7 @@ class AIModelConfig(Base):
         String(500), nullable=True
     )  # API base URL
     api_key: Mapped[str | None] = mapped_column(EncryptedString(500), nullable=True)
-    context_window: Mapped[int] = mapped_column(Integer, default=128000)  # 上下文窗口
+    context_window: Mapped[int] = mapped_column(Integer, default=0)  # 上下文窗口（0=自动识别）
     max_tokens: Mapped[int] = mapped_column(Integer, default=4096)  # 最大输出 token
     temperature: Mapped[float] = mapped_column(default=0.7)
     tier: Mapped[str] = mapped_column(
