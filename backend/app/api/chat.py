@@ -371,7 +371,7 @@ class CreateChatTaskRequest(BaseModel):
     """创建聊天任务请求"""
 
     message: str = Field(..., max_length=10000)
-    context: list[ChatMessage] | None = Field(default=None)
+    context: list[ChatMessage] | None = Field(default=None, max_length=50)
     model_config_id: int | None = None
     max_iterations: int = 10
     enable_tools: bool = True

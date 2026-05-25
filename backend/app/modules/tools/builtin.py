@@ -222,8 +222,7 @@ class ViewTool(BaseTool):
             path=str(safe_path),
             offset=offset,
             limit=limit,
-            _allow_sensitive=True,
-            _allow_outside=True,
+            raw=False,
         )
 
     async def _view_directory(self, path, limit: int) -> str:
@@ -301,10 +300,15 @@ class ReadFileTool(BaseTool):
             description="最大读取行数（适用于 Excel/CSV），默认 200",
             default=200,
         ),
+        "raw": ToolParameter(
+            type="boolean",
+            description="是否返回原始纯文本（不加标题行号前缀）。默认 true 保持向后兼容。",
+            default=True,
+        ),
     }
     required = ["path"]
 
-    async def execute(self, path: str, *, offset: int = 1, limit: int = 200, sheet_name: str = "", max_rows: int = 200, **kwargs) -> str:
+    async def execute(self, path: str, *, offset: int = 1, limit: int = 200, sheet_name: str = "", max_rows: int = 200, raw: bool = True, **kwargs) -> str:
         try:
             # 沙箱校验
             from pathlib import Path
@@ -355,10 +359,12 @@ class ReadFileTool(BaseTool):
             end = min(total, start + limit)
             selected = lines[start:end]
 
-            header = f"[{os.path.basename(sp)}] Lines {start + 1}-{end} of {total}:"
+            if not raw:
+                header = f"[{os.path.basename(sp)}] Lines {start + 1}-{end} of {total}:"
+                selected.insert(0, header)
             if end < total:
                 selected.append("... (内容已截断，使用 offset/limit 查看更多)")
-            return header + "\n" + "\n".join(selected)
+            return "\n".join(selected)
 
         except FileNotFoundError:
             return f"错误: 文件不存在 - {path}"
@@ -1899,15 +1905,18 @@ class RunBackgroundTool(BaseTool):
     }
     required = ["tool_name", "args"]
 
-    async def execute(self, tool_name: str, args: str, label: str = "", **kwargs) -> str:
+    async def execute(self, tool_name: str, args: str | dict, label: str = "", **kwargs) -> str:
         try:
-            # 解析 args JSON
-            try:
-                tool_args = json.loads(args)
-                if not isinstance(tool_args, dict):
-                    return json.dumps({"success": False, "error": "args 必须是 JSON 对象"})
-            except json.JSONDecodeError as e:
-                return json.dumps({"success": False, "error": f"args JSON 解析失败: {e}"})
+            # 解析 args：兼容 dict 和 JSON 字符串两种格式
+            if isinstance(args, dict):
+                tool_args = args
+            else:
+                try:
+                    tool_args = json.loads(args)
+                    if not isinstance(tool_args, dict):
+                        return json.dumps({"success": False, "error": "args 必须是 JSON 对象"})
+                except json.JSONDecodeError as e:
+                    return json.dumps({"success": False, "error": f"args JSON 解析失败: {e}"})
 
             # 从全局注册表获取工具
             global_registry = get_tool_registry()
