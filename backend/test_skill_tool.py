@@ -5,8 +5,6 @@ SkillTool 功能测试
 """
 import pytest
 import json
-import tempfile
-import os
 
 # ═══════════════════════════════════════════════════════════
 # 测试 1: 工具结构

@@ -7,10 +7,16 @@ Agent 执行 API - 调用 AgentLoop 执行 Agent
 - 执行历史记录
 """
 
+from __future__ import annotations
+
+import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -25,10 +31,135 @@ from app.modules.agent.context import PersonaConfig
 from app.modules.llm import SimpleLLMProvider
 from app.modules.tools import ToolRegistry, register_builtin_tools
 
+if TYPE_CHECKING:
+    from app.modules.memory import MemoryManage
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/agents", tags=["Agent 执行"])
 
 
-def _create_vv_post_turn_services(
+class MemoryPostTurnService:
+    """对话结束后的记忆自动提取服务。
+
+    在 _create_memory_services() 中实例化并注入 AgentLoop，
+    每次对话结束后异步提取有价值的记忆。
+    """
+
+    def __init__(self, memory_manager: "MemoryManage", sid: str):
+        self.mm = memory_manager
+        self.session_id = sid
+        self.last_message_uuid: Optional[str] = None
+        self._main_wrote_memory = False
+
+    def mark_main_wrote_memory(self):
+        self._main_wrote_memory = True
+
+    async def extract_and_store(self, messages: list) -> None:
+        """异步从对话中提取记忆。"""
+        try:
+            from app.modules.memory import ConversationContext, Message
+
+            msgs = []
+            for m in messages:
+                role = m.get("role", "user")
+                if role == "system":
+                    continue
+                content = m.get("content", "")
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False)
+                msgs.append(Message(
+                    uuid=m.get("tool_call_id", str(hash(content))),
+                    role=role,
+                    content=content,
+                ))
+
+            context = ConversationContext(
+                session_id=self.session_id,
+                messages=msgs,
+                last_memory_message_uuid=self.last_message_uuid,
+                main_agent_wrote_memory=self._main_wrote_memory,
+            )
+
+            result = await asyncio.to_thread(self.mm.auto_extract, context)
+            if msgs:
+                self.last_message_uuid = msgs[-1].uuid
+            self._main_wrote_memory = False
+
+            if result.extracted > 0:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"Memory extraction: {result.extracted} new entries"
+                )
+        except Exception as e:
+            logger.warning(f"Memory extraction failed for session {self.session_id}: {e}")
+
+
+def _sync_llm_call(provider, messages: list[dict[str, Any]]) -> str:
+    """使用 provider 配置发起同步 LLM 调用，返回文本内容。
+
+    复制 SimpleLLMProvider.chat_stream 的请求构建逻辑，但使用同步 httpx.Client。
+    专用于记忆提取/排序等同步上下文中需要 LLM 调用的场景。
+    """
+    config = provider.config
+    model = provider.model
+    api_key = config.api_key
+    base_url = config.base_url
+    temperature = config.temperature
+    max_tokens = config.max_tokens
+    provider_type = config.provider
+
+    if provider_type == "anthropic":
+        url = base_url or "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        body: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": list(messages),
+        }
+        if body["messages"] and body["messages"][0]["role"] == "system":
+            body["system"] = body["messages"].pop(0)["content"]
+    else:
+        url = base_url or "https://api.openai.com/v1/chat/completions"
+        if not url.endswith("/chat/completions"):
+            url = url.rstrip("/") + "/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": list(messages),
+        }
+
+    with httpx.Client(timeout=60.0) as client:
+        response = client.post(url, headers=headers, json=body)
+
+    if response.status_code != 200:
+        error_text = response.text
+        try:
+            error_json = response.json()
+            if "error" in error_json:
+                error_text = error_json["error"].get("message", error_text)
+        except Exception:
+            pass
+        raise RuntimeError(f"LLM 调用失败 ({response.status_code}): {error_text[:300]}")
+
+    data = response.json()
+    if provider_type == "anthropic":
+        return data.get("content", [{}])[0].get("text", "")
+    else:
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+def _create_memory_services(
     llm_provider,
     model_name: str,
     user_id: int,
@@ -37,51 +168,58 @@ def _create_vv_post_turn_services(
     workspace_path: str = "",
 ) -> list:
     """
-    创建 Stage VV post-turn 服务列表，用于注入 AgentLoop
+    创建 memory post-turn 服务列表，用于注入 AgentLoop。
 
+    注入 llm_query_fn (排序) 和 extract_agent_fn (提取)，
+    使 MemoryRanker 和 MemoryExtractor 具备 LLM 调用能力。
     失败时静默降级，不阻塞 Agent 执行。
     """
     services = []
-    memory_store = None
+
     try:
         from pathlib import Path
 
-        from app.modules.agent.memory import get_memory_store
+        from app.modules.memory import (
+            create_memory_manager,
+            get_current_memory_manager,
+        )
 
+        # 确定记忆目录
         ws_path = Path(workspace_path) / "memory" if workspace_path else None
-        memory_store = get_memory_store(ws_path)
-    except Exception:
-        pass
+        if ws_path is None:
+            ws_path = Path(__file__).resolve().parent.parent.parent / "memory"
 
-    try:
-        from app.modules.agent.memory_extractor import MemoryExtractor
+        # 构建 LLM 调用闭包 — 捕获 provider 配置供记忆模块使用
+        def _llm_query(prompt: str) -> str:
+            return _sync_llm_call(
+                llm_provider,
+                [{"role": "user", "content": prompt}],
+            )
 
-        extractor = MemoryExtractor(
-            llm_provider=llm_provider,
-            model=model_name,
-            user_id=user_id,
-            session_id=session_id,
-            agent_id=agent_id,
-            memory_store=memory_store,
-        )
-        services.append(("memory_extractor", extractor))
-    except Exception:
-        pass
+        def _extract_agent(system_prompt: str, user_prompt: str) -> str:
+            return _sync_llm_call(
+                llm_provider,
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
 
-    try:
-        from app.modules.agent.conversation_summarizer import ConversationSummarizer
+        # 检查现有单例是否已具备 LLM 能力，避免不必要的重建
+        existing = get_current_memory_manager()
+        if existing is not None and existing.ranker._llm_query is not None:
+            mm = existing
+        else:
+            mm = create_memory_manager(
+                str(ws_path),
+                llm_query_fn=_llm_query,
+                extract_agent_fn=_extract_agent,
+            )
 
-        summarizer = ConversationSummarizer(
-            llm_provider=llm_provider,
-            memory_store=memory_store,
-            model=model_name,
-            user_id=user_id,
-            session_id=session_id,
-            agent_id=agent_id,
-        )
-        services.append(("conversation_summarizer", summarizer))
-    except Exception:
-        pass
+        service = MemoryPostTurnService(mm, session_id)
+        services.append(("memory_extractor", service))
+    except Exception as e:
+        logger.warning(f"Failed to create memory services: {e}")
 
     return services
 
@@ -99,8 +237,12 @@ async def _build_user_aware_system_prompt(
 
     # 尝试从 Workspace 加载
     if user.default_workspace_id:
+        from sqlalchemy.orm import selectinload
+
         result = await db.execute(
-            select(Workspace).where(Workspace.id == user.default_workspace_id)
+            select(Workspace)
+            .where(Workspace.id == user.default_workspace_id)
+            .options(selectinload(Workspace.organization))
         )
         workspace = result.scalar_one_or_none()
         if workspace:
@@ -191,7 +333,6 @@ async def execute_agent(
         # 获取模型配置
         model_config = None
         if agent.model:
-            # agent.model 可能是模型名称或 ID
             try:
                 model_id = int(agent.model)
                 result = await db.execute(
@@ -199,14 +340,12 @@ async def execute_agent(
                 )
                 model_config = result.scalar_one_or_none()
             except (ValueError, TypeError):
-                # 如果不是 ID，尝试按名称匹配
                 result = await db.execute(
                     select(AIModelConfig).where(AIModelConfig.model_name == agent.model)
                 )
                 model_config = result.scalar_one_or_none()
 
         if not model_config:
-            # 使用默认配置
             logger.info("No agent model config, using default")
             result = await db.execute(
                 select(AIModelConfig).where(AIModelConfig.is_default)
@@ -241,7 +380,7 @@ async def execute_agent(
         # 创建 LLM Provider（简化版，直接使用配置）
         provider = SimpleLLMProvider(config=model_config)
 
-        # Context 压缩组件（Phase 1: 统一入口）
+        # Context 压缩组件
         from app.modules.agent.compactor import CompactionConfig, Compactor
         from app.modules.agent.compression_service import ContextCompressionService
         from app.modules.agent.context_pruner import ContextPruner
@@ -279,7 +418,6 @@ async def execute_agent(
             },
         )
         if error:
-            # 安全网关审批：创建审批记录
             if error.get("action") == "approve":
                 from app.models.approval import Approval, ApprovalStatus, ApprovalType
 
@@ -338,8 +476,8 @@ async def execute_agent(
             security_client=security_client,
         )
 
-        # Stage VV: 注入 post-turn 服务
-        vv_services = _create_vv_post_turn_services(
+        # Stage VV: 注入 memory post-turn 服务
+        memory_services = _create_memory_services(
             llm_provider=provider,
             model_name=model_config.model_name,
             user_id=current_user.id,
@@ -347,8 +485,8 @@ async def execute_agent(
             agent_id=agent.id,
             workspace_path=getattr(agent, "workspace_path", "") or "",
         )
-        if vv_services:
-            agent_loop.configure_post_turn(vv_services)
+        if memory_services:
+            agent_loop.configure_post_turn(memory_services)
 
         # 执行
         start_time = time.time()
@@ -458,7 +596,7 @@ async def execute_agent_stream(
     # 创建 LLM Provider
     provider = SimpleLLMProvider(config=model_config)
 
-    # Context 压缩组件（Phase 1: 统一入口）
+    # Context 压缩组件
     from app.modules.agent.compactor import CompactionConfig, Compactor
     from app.modules.agent.compression_service import ContextCompressionService
     from app.modules.agent.context_pruner import ContextPruner
@@ -501,8 +639,8 @@ async def execute_agent_stream(
         compression_service=compression_service,
     )
 
-    # Stage VV: 注入 post-turn 服务
-    vv_services = _create_vv_post_turn_services(
+    # Stage VV: 注入 memory post-turn 服务
+    memory_services = _create_memory_services(
         llm_provider=provider,
         model_name=model_config.model_name,
         user_id=current_user.id,
@@ -510,8 +648,8 @@ async def execute_agent_stream(
         agent_id=agent.id,
         workspace_path=getattr(agent, "workspace_path", "") or "",
     )
-    if vv_services:
-        agent_loop.configure_post_turn(vv_services)
+    if memory_services:
+        agent_loop.configure_post_turn(memory_services)
 
     async def generate():
         try:

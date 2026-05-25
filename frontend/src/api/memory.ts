@@ -1,101 +1,106 @@
 import { api } from './index'
 
 export interface MemoryEntry {
-  line_number: number
-  source: string
+  id: string
+  filename: string
+  name: string
+  description: string
+  type: 'user' | 'feedback' | 'project' | 'reference'
   content: string
-  date: string
+  created_at: string | null
+  updated_at: string | null
+  freshness: string
+  is_stale: boolean
+  tags: string[]
+}
+
+export interface MemoryIndexEntry {
+  filename: string
+  description: string
+  path: string
+}
+
+export interface MemoryIndexResponse {
+  content: string
+  entries: MemoryIndexEntry[]
 }
 
 export interface MemoryStats {
-  total_entries: number
-  sources: Record<string, number>
-  date_range: { min: string; max: string } | null
-  total_chars: number
-  oldest_date?: string
-  newest_date?: string
+  total_files: number
+  index_entries: number
+  by_type: Record<string, number>
 }
 
-export interface MemorySearchResult {
+export interface MemoryListResponse {
   entries: MemoryEntry[]
   total: number
-  keywords: string[]
-  match_mode: string
+}
+
+export interface MemorySearchResponse {
+  entries: MemoryEntry[]
+  total: number
+  keyword: string
+}
+
+export interface MemoryCreatePayload {
+  content: string
+  type?: string
+  name?: string
+  description?: string
+  tags?: string[]
+}
+
+export interface MemoryUpdatePayload {
+  content: string
+  name?: string
+  description?: string
+  tags?: string[]
 }
 
 export const memoryApi = {
-  /** 获取记忆概览 */
-  info() {
-    return api.get<MemoryStats>('/memory')
+  /** 获取所有记忆列表 */
+  list(params?: {
+    type?: string
+    sort_by?: string
+    order?: string
+    limit?: number
+    offset?: number
+  }) {
+    return api.get<MemoryListResponse>('/memory', { params })
   },
 
-  /** 获取详细统计 */
+  /** 获取 MEMORY.md 索引 */
+  getIndex() {
+    return api.get<MemoryIndexResponse>('/memory/index')
+  },
+
+  /** 获取统计概览 */
   stats() {
     return api.get<MemoryStats>('/memory/stats')
   },
 
-  /** 获取最近 N 条 */
-  recent(count = 20) {
-    return api.get<{ entries: MemoryEntry[]; total: number }>('/memory/recent', { params: { count } })
+  /** 获取单个记忆文件 */
+  get(filename: string) {
+    return api.get<MemoryEntry>(`/memory/${encodeURIComponent(filename)}`)
   },
 
-  /** 获取单条 */
-  line(lineNumber: number) {
-    return api.get<MemoryEntry>(`/memory/line/${lineNumber}`)
+  /** 创建新记忆 */
+  create(payload: MemoryCreatePayload) {
+    return api.post<MemoryEntry>('/memory', payload)
   },
 
-  /** 获取多条 */
-  lines(start: number, end: number) {
-    return api.get<{ entries: MemoryEntry[]; total: number }>('/memory/lines', { params: { start, end } })
+  /** 更新记忆 */
+  update(filename: string, payload: MemoryUpdatePayload) {
+    return api.put<MemoryEntry>(`/memory/${encodeURIComponent(filename)}`, payload)
   },
 
-  /** 搜索 */
-  search(keywords: string[], maxResults = 15, matchMode: 'or' | 'and' = 'or') {
-    return api.post<MemorySearchResult>('/memory/search', { keywords, max_results: maxResults, match_mode: matchMode })
+  /** 删除记忆 */
+  delete(filename: string) {
+    return api.delete(`/memory/${encodeURIComponent(filename)}`)
   },
 
-  /** 追加一条 */
-  append(source: string, content: string, date?: string) {
-    return api.post<{ success: boolean; line_number: number }>('/memory/append', { source, content, date })
-  },
-
-  /** 批量追加 */
-  appendBatch(source: string, entries: string[]) {
-    return api.post<{ success: boolean; count: number; line_numbers: number[] }>('/memory/append-batch', { source, entries })
-  },
-
-  /** 删除指定行 */
-  deleteLine(lineNumber: number) {
-    return api.delete(`/memory/line/${lineNumber}`)
-  },
-
-  /** 批量删除 */
-  deleteLines(lineNumbers: number[]) {
-    return api.delete('/memory/lines', { data: { line_numbers: lineNumbers } })
-  },
-
-  /** 清空 */
-  clear() {
-    return api.delete('/memory/clear')
-  },
-
-  /** 导出 */
-  exportMemory() {
-    return api.get<{ content: string; line_count: number }>('/memory/export')
-  },
-
-  /** 导入 */
-  importMemory(content: string, source = 'import') {
-    return api.post<{ success: boolean; imported_count: number }>('/memory/import', { content, source })
-  },
-
-  /** 全量更新内容（替换整个文件） */
-  saveContent(content: string) {
-    return api.put<{ success: boolean; line_count: number }>('/memory/content', { content })
-  },
-
-  /** 获取来源列表 */
-  sources() {
-    return api.get<{ sources: { value: string; label: string }[] }>('/memory/sources')
+  /** 全文搜索 */
+  search(keyword: string, type?: string, limit?: number) {
+    return api.post<MemorySearchResponse>('/memory/search', { keyword, type, limit })
   },
 }

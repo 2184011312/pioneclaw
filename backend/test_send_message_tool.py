@@ -6,7 +6,6 @@ SendMessageTool 功能测试
 import asyncio
 import json
 import pytest
-from datetime import datetime
 
 
 class TestInboxRegistry:
@@ -14,7 +13,7 @@ class TestInboxRegistry:
 
     def test_register_agent(self):
         from app.modules.tools.send_message import (
-            register_agent, unregister_agent, list_agents, _agent_inboxes, _agent_metadata,
+            register_agent, _agent_inboxes, _agent_metadata,
         )
         # Clean slate for test
         aid = "test-register-1"
@@ -52,7 +51,7 @@ class TestInboxRegistry:
 
     def test_send_to_agent_existing(self):
         from app.modules.tools.send_message import (
-            register_agent, unregister_agent, send_to_agent, _agent_inboxes, _agent_metadata,
+            register_agent, send_to_agent, _agent_inboxes, _agent_metadata,
         )
         aid = "test-send-1"
         _agent_inboxes.pop(aid, None)
@@ -77,7 +76,7 @@ class TestInboxRegistry:
 
     def test_list_agents(self):
         from app.modules.tools.send_message import (
-            register_agent, unregister_agent, list_agents, _agent_inboxes, _agent_metadata,
+            register_agent, list_agents, _agent_inboxes, _agent_metadata,
         )
         aid = "test-list-1"
         _agent_inboxes.pop(aid, None)
@@ -117,8 +116,7 @@ class TestSendMessageTool:
     @pytest.mark.asyncio
     async def test_send_to_existing_agent(self):
         from app.modules.tools.send_message import (
-            SendMessageTool, register_agent, send_to_agent,
-            _agent_inboxes, _agent_metadata,
+            SendMessageTool, register_agent, _agent_inboxes, _agent_metadata,
         )
         aid = "test-tool-send-1"
         _agent_inboxes.pop(aid, None)

@@ -3,7 +3,6 @@ TeamCreateTool + TeamDeleteTool 功能测试
 
 测试团队注册表、创建/删除工具、send_to_team 群发。
 """
-import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -98,7 +97,7 @@ class TestTeamCreateTool:
 
     @pytest.mark.asyncio
     async def test_create_team_basic(self):
-        from app.modules.tools.team import TeamCreateTool, _teams
+        from app.modules.tools.team import TeamCreateTool
         _cleanup_teams()
 
         mock_session = AsyncMock()
@@ -119,7 +118,7 @@ class TestTeamCreateTool:
 
     @pytest.mark.asyncio
     async def test_create_team_with_members(self):
-        from app.modules.tools.team import TeamCreateTool, _teams
+        from app.modules.tools.team import TeamCreateTool
         _cleanup_teams()
 
         mock_session = AsyncMock()
@@ -160,7 +159,7 @@ class TestTeamDeleteTool:
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_team(self):
-        from app.modules.tools.team import TeamDeleteTool, _teams
+        from app.modules.tools.team import TeamDeleteTool
         _cleanup_teams()
 
         mock_result = MagicMock()
@@ -179,7 +178,7 @@ class TestTeamDeleteTool:
 
     @pytest.mark.asyncio
     async def test_delete_team_from_runtime(self):
-        from app.modules.tools.team import TeamDeleteTool, register_team, _teams
+        from app.modules.tools.team import TeamDeleteTool, register_team
         _cleanup_teams()
 
         register_team("t-del", "To Delete")

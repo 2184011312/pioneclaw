@@ -89,7 +89,8 @@ class ContextBuilder:
         memory_store=None,
         skills_registry=None,
         persona_config: PersonaConfig | None = None,
-        memory_orchestrator=None,  # LayeredMemory MemoryOrchestrator
+        memory_orchestrator=None,  # LayeredMemory MemoryOrchestrator (deprecated)
+        memory_manager=None,  # MemoryManage from app.modules.memory (fish_memory)
         context_file_loader=None,  # ContextFileLoader（OpenClaw 借鉴）
         prompt_cache_strategy=None,  # PromptCacheStrategy（OpenClaw 借鉴）
     ):
@@ -98,6 +99,7 @@ class ContextBuilder:
         self.skills_registry = skills_registry
         self.persona_config = persona_config or PersonaConfig()
         self.memory_orchestrator = memory_orchestrator
+        self.memory_manager = memory_manager  # MemoryManage instance
 
         # OpenClaw 借鉴：分层上下文文件 + Prompt Caching
         from app.modules.agent.context_files import (
@@ -151,7 +153,7 @@ class ContextBuilder:
             parts.append(skills_section)
 
         # 4. 记忆上下文
-        if include_memory and self.memory_store:
+        if include_memory and (self.memory_store or self.memory_manager):
             memory_section = self._build_memory_section()
             if memory_section:
                 parts.append(memory_section)
@@ -256,11 +258,33 @@ class ContextBuilder:
             return ""
 
     def _build_memory_section(self) -> str:
-        """构建记忆部分（同步方式，使用传统 memory_store）
+        """构建记忆部分。
 
-        MemoryOrchestrator 语义检索通过 async 路径完成。
-        此方法仅使用同步可用的 memory_store 作为降级方案。
+        优先使用 MemoryManage (fish_memory)，降级到传统 memory_store。
         """
+        # 优先使用新的 fish_memory 模块
+        if self.memory_manager is not None:
+            try:
+                entries = self.memory_manager.store.get_all_files()
+                if not entries:
+                    return ""
+
+                # 按更新时间倒序，取最近 10 条
+                entries.sort(key=lambda e: e.updated_at, reverse=True)
+                recent = entries[:10]
+
+                lines = ["# 记忆上下文", "", "以下是最近的记忆条目，可参考但不必主动提及：", ""]
+                for e in recent:
+                    stale_note = " [可能已过时]" if e.is_stale else ""
+                    lines.append(f"- [{e.type.value}] {e.name}: {e.description}{stale_note}")
+
+                lines.append("")
+                lines.append("**注意**: 记忆是某个时间点的快照，可能已过时。在基于记忆采取行动前，先验证其是否仍然正确。")
+                return "\n".join(lines)
+            except Exception:
+                pass  # 降级到下面
+
+        # 降级：传统 memory_store
         if not self.memory_store:
             return ""
 
@@ -491,9 +515,21 @@ class ContextBuilder:
             if skill_section:
                 parts.append(skill_section)
 
-        # 4. 记忆（使用 MemoryOrchestrator 语义检索）
+        # 4. 记忆（使用 MemoryManage.recall 语义检索，降级到静态列表）
         if include_memory:
-            if self.memory_orchestrator and current_message:
+            if self.memory_manager and current_message:
+                try:
+                    attachments = self.memory_manager.recall(current_message)
+                    if attachments:
+                        memory_section = self.memory_manager.format_for_injection(attachments)
+                        if memory_section:
+                            parts.append(memory_section)
+                except Exception as e:
+                    logger.warning(f"Memory recall failed: {e}")
+                    memory_section = self._build_memory_section()
+                    if memory_section:
+                        parts.append(memory_section)
+            elif self.memory_orchestrator and current_message:
                 try:
                     result = await self.memory_orchestrator.recall(
                         query=current_message,
@@ -505,7 +541,6 @@ class ContextBuilder:
                         parts.append(memory_section)
                 except Exception as e:
                     logger.warning(f"Async memory recall failed: {e}")
-                    # 降级到传统方式
                     memory_section = self._build_memory_section()
                     if memory_section:
                         parts.append(memory_section)

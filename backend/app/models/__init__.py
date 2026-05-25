@@ -1,6 +1,5 @@
 from app.models.approval import Approval, ApprovalStatus, ApprovalType
 from app.models.connection_event import ConnectionEvent
-from app.models.layered_memory import ContextType, LayeredMemory, MemoryLayer
 from app.models.models import (
     Agent,
     AgentExecution,
@@ -70,9 +69,7 @@ __all__ = [
     "WikiSpace",
     "WikiSpaceType",
     "TaskComment",
-    "LayeredMemory",
-    "MemoryLayer",
-    "ContextType",
+    # LayeredMemory model deleted — replaced by fish_memory system
     "Workspace",
     "Approval",
     "ApprovalStatus",

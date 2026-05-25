@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -15,7 +16,6 @@ from app.models import (
     User,
 )
 from app.models.approval import Approval, ApprovalStatus
-from app.models.layered_memory import LayeredMemory
 from app.schemas import DashboardStats
 
 router = APIRouter(prefix="/dashboard", tags=["仪表盘"])
@@ -143,11 +143,19 @@ async def get_counts(
 
     # 总模块数量
     skill_count = await db.execute(select(func.count(Skill.id)).where(Skill.is_active))
-    memory_count = await db.execute(
-        select(func.count(LayeredMemory.id))
-        .where(LayeredMemory.user_id == current_user.id)
-        .where(LayeredMemory.is_active)
-    )
+    # 记忆数量：从 MEMORY.md 索引读取（避免 rglob 文件系统遍历）
+    try:
+        from app.modules.memory import create_memory_manager, get_current_memory_manager
+        memory_dir = str(Path(__file__).resolve().parent.parent.parent / "memory")
+        mm = get_current_memory_manager()
+        if mm is None:
+            mm = create_memory_manager(memory_dir)
+        counts = mm.index.count_by_type()
+        memory_count_val = counts["total"]
+        memory_by_type = counts["by_type"]
+    except Exception:
+        memory_count_val = 0
+        memory_by_type = {}
 
     # 最近任务（5条）
     recent_tasks_result = await db.execute(
@@ -215,7 +223,8 @@ async def get_counts(
         "api_failed_today": api_failed_today.scalar() or 0,
         # 其他数量
         "skills": skill_count.scalar() or 0,
-        "memories": memory_count.scalar() or 0,
+        "memories": memory_count_val,
+        "memories_by_type": memory_by_type,
         # 最近任务
         "recent_tasks": recent_tasks,
         # 最近日志

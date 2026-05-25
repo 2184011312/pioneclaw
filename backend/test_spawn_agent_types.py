@@ -4,7 +4,6 @@ SpawnTool Agent 类型功能测试
 测试 explore/plan/general 三种 Agent 类型的工具过滤和系统提示词注入。
 """
 import pytest
-import json
 from app.modules.tools.builtin import SpawnTool
 from app.modules.tools import ToolRegistry, register_builtin_tools
 
@@ -271,7 +270,7 @@ class TestSpawnWithAgentType:
     @pytest.mark.asyncio
     async def test_explore_type_filters_tools(self):
         """验证 execute 方法中 agent_type=explore 会过滤工具"""
-        tool = SpawnTool()
+        SpawnTool()
         tool_registry = ToolRegistry()
         register_builtin_tools(tool_registry)
         all_defs = tool_registry.get_definitions()

@@ -15,7 +15,6 @@ from app.api.files import router as files_router
 from app.api.graph_rag import router as graph_rag_router
 from app.api.interrupt import router as interrupt_router
 from app.api.knowledge import router as knowledge_router
-from app.api.layered_memory import router as layered_memory_router
 from app.api.llm_usage import router as llm_usage_router
 from app.api.logs import router as logs_router
 from app.api.mcp import router as mcp_router
@@ -84,7 +83,7 @@ router.include_router(research_router)
 router.include_router(permissions_router)
 router.include_router(organizations_router)
 router.include_router(wiki_router)
-router.include_router(layered_memory_router)
+# layered_memory router removed — replaced by memory_api_router
 router.include_router(graph_rag_router)
 router.include_router(plugins_router)
 router.include_router(workspaces_router)

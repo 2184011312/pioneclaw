@@ -49,10 +49,6 @@ from app.modules.agent.context_files import (
     merge_identity_content,
     parse_identity_md,
 )
-from app.modules.agent.conversation_summarizer import (
-    ConversationSummarizer,
-    SummarizerConfig,
-)
 from app.modules.agent.guardrails import (
     Guardrail,
     GuardrailConfig,
@@ -74,6 +70,9 @@ from app.modules.agent.handoff import (
     parallel_handoffs,
     reset_handoff_tracker,
 )
+
+# Memory module has been migrated to app.modules.memory (fish_memory system)
+# Use: from app.modules.memory import MemoryManage, get_current_memory_manager
 from app.modules.agent.heartbeat import (
     HEARTBEAT_JOB_ID,
     HEARTBEAT_MESSAGE,
@@ -116,15 +115,6 @@ from app.modules.agent.loop import (
     ToolCall,
 )
 from app.modules.agent.magic_docs import MagicDocUpdater
-from app.modules.agent.memory import (
-    MemoryEntry,
-    MemorySource,
-    MemoryStats,
-    MemoryStore,
-    get_memory_store,
-    init_memory_store,
-)
-from app.modules.agent.memory_extractor import MemoryExtractor
 from app.modules.agent.personalities import (
     Personality,
     PersonalityCategory,
@@ -224,6 +214,9 @@ from app.modules.agent.workflow import (
     WorkflowEngine,
     WorkflowMode,
 )
+
+# Stage VV services migrated to app.modules.memory (fish_memory system)
+# MemoryExtractor, ConversationSummarizer now live in agent_execute._create_memory_services()
 
 __all__ = [
     "AgentLoop",
@@ -336,6 +329,8 @@ __all__ = [
     "SessionTask",
     "get_task_manager",
     "create_cancellation_token",
+    # Magic Docs
+    "MagicDocUpdater",
     # Personalities
     "Personality",
     "PersonalityCategory",
@@ -362,13 +357,7 @@ __all__ = [
     "get_heartbeat_greeting_prompt",
     "get_cron_task_prompt",
     "format_memory_entry",
-    # Memory
-    "MemoryStore",
-    "MemoryEntry",
-    "MemoryStats",
-    "MemorySource",
-    "get_memory_store",
-    "init_memory_store",
+    # Memory — migrated to app.modules.memory (fish_memory system)
     # Heartbeat
     "HeartbeatService",
     "HeartbeatConfig",
@@ -415,9 +404,5 @@ __all__ = [
     "RevisionConflictError",
     "InvalidStateTransition",
     "VALID_TRANSITIONS",
-    # Stage VV: 持久化记忆增强
-    "MemoryExtractor",
-    "ConversationSummarizer",
-    "SummarizerConfig",
-    "MagicDocUpdater",
+    # Stage VV: 持久化记忆增强 — migrated to app.modules.memory
 ]

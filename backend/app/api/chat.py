@@ -460,6 +460,8 @@ async def react_chat(
         logger.info(f"Tools enabled: {len(tool_definitions)} tools registered")
 
     # 用 ContextBuilder 构建完整系统提示词
+    from sqlalchemy.orm import selectinload
+
     from app.models import Workspace
 
     ws_result = await db.execute(
@@ -724,6 +726,8 @@ async def react_chat_stream(
         register_builtin_tools(tool_registry)
 
     # 用 ContextBuilder 构建完整系统提示词
+    from sqlalchemy.orm import selectinload
+
     from app.models import Workspace
     from app.modules.agent.compactor import CompactionConfig as CC
     from app.modules.agent.compactor import Compactor as C

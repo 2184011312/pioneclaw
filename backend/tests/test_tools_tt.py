@@ -609,7 +609,7 @@ class TestSpawnToolTT:
         tools = SpawnTool._AGENT_TYPE_TOOLS["guide"]
         assert "knowledge_search" in tools
         assert "vector_memory_recall" in tools
-        assert "file_memory_read" in tools
+        assert "memory_retrieve" in tools
         assert "read_file" in tools
         assert "exec" not in tools
         assert "spawn" not in tools
