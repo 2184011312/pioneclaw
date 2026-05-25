@@ -1433,7 +1433,7 @@ function handleSlashCommand(command: string) {
 // 发送消息
 async function sendMessage() {
   if (!inputMessage.value.trim()) return
-  if (loadingConversationId.value === currentConversation.value?.id) return
+  if (loadingConversationId.value) return
 
   if (inputMessage.value.startsWith('/')) {
     handleSlashCommand(inputMessage.value.trim())

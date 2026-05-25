@@ -317,8 +317,6 @@ class ReadFileTool(BaseTool):
             from app.core.sandbox import validate_path_for_read
             safe_path = validate_path_for_read(
                 path, Path(settings.WORKSPACE_DIR),
-                allow_sensitive=kwargs.get("_allow_sensitive", False),
-                allow_outside=kwargs.get("_allow_outside", False),
             )
 
             ext = os.path.splitext(str(safe_path))[1].lower()
@@ -364,7 +362,10 @@ class ReadFileTool(BaseTool):
                 selected.insert(0, header)
             if end < total:
                 selected.append("... (内容已截断，使用 offset/limit 查看更多)")
-            return "\n".join(selected)
+            result = "\n".join(selected)
+            if len(result) > 8000:
+                result = result[:8000] + "\n... (内容已截断)"
+            return result
 
         except FileNotFoundError:
             return f"错误: 文件不存在 - {path}"
