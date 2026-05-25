@@ -1444,6 +1444,9 @@ async function sendMessage() {
     await newConversation()
   }
 
+  // 立即设置标志，防止快速点击导致重复发送
+  loadingConversationId.value = currentConversation.value!.id
+
   const userMessage = inputMessage.value.trim()
   inputMessage.value = ''
   if (currentConversation.value) currentConversation.value.draftText = ''
@@ -1465,8 +1468,6 @@ async function sendMessage() {
   }
   currentConversation.value!.updatedAt = new Date()
   scrollToBottom()
-
-  loadingConversationId.value = currentConversation.value!.id
   const targetConversation = currentConversation.value
   if (!targetConversation) return
 
