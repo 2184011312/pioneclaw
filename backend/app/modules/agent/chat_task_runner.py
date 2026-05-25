@@ -112,6 +112,13 @@ class ChatTaskRunner:
     async def _process_chunk(self, raw_chunk: str) -> None:
         """解析原始 chunk 并写入 buffer"""
 
+        # 防御性处理：确保 raw_chunk 是字符串
+        if not isinstance(raw_chunk, str):
+            if isinstance(raw_chunk, dict):
+                raw_chunk = json.dumps(raw_chunk, ensure_ascii=False)
+            else:
+                raw_chunk = str(raw_chunk)
+
         # 提取思考内容
         for match in THINKING_PATTERN.finditer(raw_chunk):
             thinking = match.group(1)

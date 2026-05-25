@@ -1062,6 +1062,9 @@ async function selectConversation(conv: Conversation) {
   inputMessage.value = conv.draftText || ''
   contextUsage.value = null // 切换会话时重置用量
 
+  // 立即清空消息，防止 API 加载期间用户发送消息时把旧会话内容当作 context 传过去
+  replaceMessages([])
+
   let loadedMessages: ChatMessage[] = []
 
   // 1. 优先从后端加载（持久化数据为准）
@@ -1474,10 +1477,12 @@ async function sendMessage() {
       targetConversation.sessionId = sessionId
     }
 
-    // 构造 context（排除最后一条 user message）
+    // 构造 context（排除最后一条 user message，限制最近 30 条避免超长）
+    const MAX_CONTEXT_MESSAGES = 30
     const contextMessages = streamMessages.value
       .slice(0, -1)
       .filter((m) => !m.isStreaming && m.role)
+      .slice(-MAX_CONTEXT_MESSAGES)
       .map((m) => ({ role: m.role, content: m.content }))
 
     const token = getAccessToken() || localStorage.getItem('token') || ''
@@ -1535,7 +1540,13 @@ async function sendMessage() {
       setTimeout(() => { window.location.href = '/login' }, 1000)
       return
     }
-    const errorMsg = error.response?.data?.detail || error.detail || msg || $t('chat.requestFailed')
+    let errorMsg = error.response?.data?.detail || error.detail || msg || $t('chat.requestFailed')
+    // 防御性处理：解析 FastAPI 422 detail 数组，提取人类可读消息
+    if (Array.isArray(errorMsg)) {
+      errorMsg = errorMsg.map((e: any) => e.msg || JSON.stringify(e)).join('; ')
+    } else if (typeof errorMsg !== 'string') {
+      errorMsg = JSON.stringify(errorMsg)
+    }
     addMessage({
       id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       role: 'assistant',
