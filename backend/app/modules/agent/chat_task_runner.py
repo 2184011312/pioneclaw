@@ -146,15 +146,19 @@ class ChatTaskRunner:
         for match in TOOL_RESULT_PATTERN.finditer(raw_chunk):
             try:
                 tool_data = json.loads(match.group(1))
+                result = tool_data.get("result")
+                # 防御性处理：None 转为空字符串，确保前端能正确判断
+                if result is None:
+                    result = ""
                 await self.buffer.append({
                     "type": "tool_result",
                     "name": tool_data.get("name", ""),
                     "tool_call_id": tool_data.get("tool_call_id", ""),
-                    "result": tool_data.get("result", ""),
+                    "result": result,
                     "duration_ms": tool_data.get("duration_ms"),
                 })
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse TOOL_RESULT marker: {e}")
 
         for match in TOOL_ERROR_PATTERN.finditer(raw_chunk):
             try:

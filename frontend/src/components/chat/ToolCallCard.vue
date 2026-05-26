@@ -61,9 +61,14 @@
           </div>
         </div>
 
-        <div v-if="result != null" class="tool-section">
+        <div v-if="hasResult" class="tool-section">
           <div class="section-label">结果</div>
-          <pre class="tool-result">{{ result }}</pre>
+          <pre class="tool-result">{{ formatResult(result) }}</pre>
+        </div>
+
+        <div v-else-if="isEmptyResult" class="tool-section">
+          <div class="section-label">结果</div>
+          <div class="tool-result-empty">（工具未返回内容）</div>
         </div>
 
         <div v-if="error != null" class="tool-section">
@@ -109,6 +114,26 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const isCollapsed = ref(true)
+
+/* ─── 结果判断 ─── */
+const hasResult = computed(() => {
+  return props.result != null && props.result !== ''
+})
+
+const isEmptyResult = computed(() => {
+  return props.result === ''
+})
+
+function formatResult(value: string | null): string {
+  if (!value) return ''
+  // 尝试 JSON 格式化
+  try {
+    const parsed = JSON.parse(value)
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return value
+  }
+}
 
 function toggleCollapse() {
   isCollapsed.value = !isCollapsed.value
@@ -476,6 +501,13 @@ function formatToolName(name: string): string {
 .tool-result {
   background: var(--el-fill-color);
   color: var(--pc-text);
+}
+
+.tool-result-empty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--pc-text-muted);
+  font-style: italic;
 }
 
 .tool-error {
