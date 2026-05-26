@@ -1136,6 +1136,34 @@ async function selectConversation(conv: Conversation) {
   }
 }
 
+/**
+ * 添加 assistant 消息，若消息列表中已存在内容相同的 assistant 消息（忽略首尾空白和常见表情前缀）则跳过。
+ * 从列表末尾向前查找，避免最后一条是 user 消息时检测失效。
+ */
+function addAssistantMessageIfNotDuplicate(
+  content: string,
+  extra?: Partial<ChatMessage>
+) {
+  const lastAssistant = [...streamMessages.value]
+    .reverse()
+    .find((m) => m.role === 'assistant')
+  if (lastAssistant) {
+    const lastContent = lastAssistant.content?.trim() || ''
+    const newContent = content.trim()
+    if (lastContent === newContent) return
+    // 兼容：历史消息可能带/不带 ⚠️❗ 等前缀，去掉前缀后再比较一次
+    const prefixRe = /^(?:[⚠️❗✅❌]\s*)+/
+    if (lastContent.replace(prefixRe, '') === newContent.replace(prefixRe, '')) return
+  }
+  addMessage({
+    id: `msg-${Date.now()}`,
+    role: 'assistant',
+    content,
+    ...extra,
+    timestamp: new Date(),
+  })
+}
+
 // 恢复活跃任务（刷新后重连）
 async function recoverActiveTask(sessionId: string) {
   // 先取消任何可能仍在运行的旧流实例
@@ -1178,15 +1206,11 @@ async function recoverActiveTask(sessionId: string) {
     } else if (task.status === 'completed') {
       // 任务已完成，从 DB 加载结果
       if (task.final_response) {
-        addMessage({
-          id: `msg-${Date.now()}`,
-          role: 'assistant',
-          content: task.final_response,
+        addAssistantMessageIfNotDuplicate(task.final_response, {
           reasoningContent: task.thinking_content || undefined,
           latency: task.latency_ms,
           input_tokens: task.input_tokens,
           output_tokens: task.output_tokens,
-          timestamp: new Date(),
         })
       }
       sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
@@ -1195,12 +1219,7 @@ async function recoverActiveTask(sessionId: string) {
     } else if (task.status === 'failed' || task.status === 'cancelled') {
       // 任务失败/取消，显示错误
       if (task.error_message) {
-        addMessage({
-          id: `msg-${Date.now()}`,
-          role: 'assistant',
-          content: `⚠️ ${task.error_message}`,
-          timestamp: new Date(),
-        })
+        addAssistantMessageIfNotDuplicate(`⚠️ ${task.error_message}`)
       }
       sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
       sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
