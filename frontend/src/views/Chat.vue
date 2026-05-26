@@ -1532,11 +1532,8 @@ async function sendMessage() {
     await startTaskStream(taskId, token)
 
     // 流式结束后同步回 conversation
+    // assistant 消息已由后端 _persist_task_result 自动保存，前端无需重复持久化
     targetConversation.messages = [...streamMessages.value]
-    const lastMsg = streamMessages.value[streamMessages.value.length - 1]
-    if (lastMsg && lastMsg.role === 'assistant') {
-      persistMessage(targetConversation, 'assistant', lastMsg.content || '', lastMsg.toolCalls, lastMsg.reasoningContent)
-    }
   } catch (error: any) {
     console.error('sendMessage error:', error)
     const msg = error.message || ''
