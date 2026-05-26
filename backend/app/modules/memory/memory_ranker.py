@@ -25,6 +25,24 @@ class MemoryRanker:
         self.store = memory_store
         self._llm_query = llm_query_fn
 
+    @property
+    def has_llm(self) -> bool:
+        """Whether an LLM callback is configured."""
+        return self._llm_query is not None
+
+    def query(self, prompt: str) -> Optional[str]:
+        """Execute an LLM query through the configured callback.
+
+        Returns the raw text response, or None if no callback is configured
+        or the call fails.
+        """
+        if not self._llm_query:
+            return None
+        try:
+            return self._llm_query(prompt)
+        except Exception:
+            return None
+
     def rank(
         self,
         manifest: List[ManifestEntry],

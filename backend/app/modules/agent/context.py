@@ -518,17 +518,21 @@ class ContextBuilder:
         # 4. 记忆（使用 MemoryManage.recall 语义检索，降级到静态列表）
         if include_memory:
             if self.memory_manager and current_message:
-                try:
-                    attachments = self.memory_manager.recall(current_message)
-                    if attachments:
-                        memory_section = self.memory_manager.format_for_injection(attachments)
+                manifest = self.memory_manager.store.scan_files()
+                if not manifest:
+                    memory_section = ""
+                else:
+                    try:
+                        attachments = self.memory_manager.recall(current_message)
+                        if attachments:
+                            memory_section = self.memory_manager.format_for_injection(attachments)
+                            if memory_section:
+                                parts.append(memory_section)
+                    except Exception as e:
+                        logger.warning(f"Memory recall failed: {e}")
+                        memory_section = self._build_memory_section()
                         if memory_section:
                             parts.append(memory_section)
-                except Exception as e:
-                    logger.warning(f"Memory recall failed: {e}")
-                    memory_section = self._build_memory_section()
-                    if memory_section:
-                        parts.append(memory_section)
             elif self.memory_orchestrator and current_message:
                 try:
                     result = await self.memory_orchestrator.recall(

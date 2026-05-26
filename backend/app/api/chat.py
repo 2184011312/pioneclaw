@@ -18,6 +18,7 @@ from app.core.database import async_session_maker
 from app.core.time_utils import format_dt as _format_dt
 from app.models import AIModelConfig, ApiUsage, ChatTask, User
 from app.modules.llm import SimpleLLMProvider
+from app.modules.memory import get_current_memory_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["对话"])
@@ -474,11 +475,15 @@ async def react_chat(
     )
     workspace = ws_result.scalar_one_or_none()
     persona = PersonaConfig.from_workspace(workspace, current_user)
+    mm = get_current_memory_manager()
     ctx_builder = ContextBuilder(
         persona_config=persona,
         workspace=Path(workspace.path) if workspace and workspace.path else Path.home(),
+        memory_manager=mm,
     )
-    system_prompt = ctx_builder.build_system_prompt() if request.enable_tools else None
+    system_prompt = await ctx_builder.build_system_prompt_async(
+        current_message=request.message,
+    ) if request.enable_tools else None
 
     # 创建 LLM Provider
     provider = SimpleLLMProvider(config=config)
@@ -744,11 +749,15 @@ async def react_chat_stream(
     )
     workspace = ws_result.scalar_one_or_none()
     persona = PersonaConfig.from_workspace(workspace, current_user)
+    mm = get_current_memory_manager()
     ctx_builder = ContextBuilder(
         persona_config=persona,
         workspace=Path(workspace.path) if workspace and workspace.path else Path.home(),
+        memory_manager=mm,
     )
-    system_prompt = ctx_builder.build_system_prompt() if request.enable_tools else None
+    system_prompt = await ctx_builder.build_system_prompt_async(
+        current_message=request.message,
+    ) if request.enable_tools else None
 
     provider = SimpleLLMProvider(config=config)
     provider.fast_mode = request.fast_mode
@@ -1198,12 +1207,16 @@ async def _run_chat_task(
             workspace = ws_result.scalar_one_or_none()
             persona = PersonaConfig.from_workspace(workspace, None)
             from pathlib import Path
+            mm = get_current_memory_manager()
 
             ctx_builder = ContextBuilder(
                 persona_config=persona,
                 workspace=Path(workspace.path) if workspace and workspace.path else Path.home(),
+                memory_manager=mm,
             )
-            system_prompt = ctx_builder.build_system_prompt() if request.enable_tools else None
+            system_prompt = await ctx_builder.build_system_prompt_async(
+                current_message=request.message,
+            ) if request.enable_tools else None
 
             # 创建 Provider
             provider = SimpleLLMProvider(config=config)

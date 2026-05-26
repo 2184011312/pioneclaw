@@ -95,6 +95,8 @@ class MemoryIndex:
         finally:
             self._release_lock()
 
+        self.truncate()
+
     def remove_entry(self, filename: str) -> None:
         """Remove an entry from MEMORY.md by filename."""
         if not os.path.exists(self.index_path):
@@ -139,6 +141,8 @@ class MemoryIndex:
             self._atomically_write_index(lines)
         finally:
             self._release_lock()
+
+        self.truncate()
 
     def get_entries(self) -> List[IndexEntry]:
         """Parse MEMORY.md and return all index entries."""

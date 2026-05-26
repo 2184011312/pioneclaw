@@ -71,6 +71,123 @@ class TestSave:
         assert isinstance(resp, MemoryResult)
         assert resp.success  # returns the existing entry
 
+    def test_save_duplicate_no_upsert_returns_old(self, mgr):
+        """Without upsert, a duplicate returns the old entry unchanged."""
+        first = mgr.save("原始内容——用户喜欢用中文交流", MemoryType.USER,
+                         MemoryMetadata(name="语言偏好", description="用户喜欢用中文交流",
+                                        type=MemoryType.USER))
+        assert isinstance(first, MemoryResult)
+        fname = first.data.filename
+
+        # Same slug → detected as duplicate, returns old entry
+        second = mgr.save("新内容——用户改口说要英文", MemoryType.USER,
+                          MemoryMetadata(name="语言偏好", description="用户喜欢用中文交流",
+                                         type=MemoryType.USER))
+        assert isinstance(second, MemoryResult)
+        assert second.data.content == "原始内容——用户喜欢用中文交流"
+        assert second.data.filename == fname
+
+    def test_save_upsert_updates_existing(self, mgr):
+        """With upsert=True, a duplicate updates the existing entry with new content."""
+        first = mgr.save("用户喜欢用中文交流", MemoryType.USER,
+                         MemoryMetadata(name="语言偏好", description="用户喜欢用中文交流",
+                                        type=MemoryType.USER))
+        assert isinstance(first, MemoryResult)
+        fname = first.data.filename
+
+        second = mgr.save("用户现在更喜欢用英文交流，不再使用中文", MemoryType.USER,
+                          MemoryMetadata(name="语言偏好", description="用户现在更喜欢用英文交流",
+                                         type=MemoryType.USER),
+                          upsert=True)
+        assert isinstance(second, MemoryResult)
+        assert second.data.content == "用户现在更喜欢用英文交流，不再使用中文"
+        assert second.data.filename == fname
+
+    def test_save_upsert_no_duplicate_creates_new(self, mgr):
+        """upsert=True on a genuinely new topic still creates a new entry."""
+        first = mgr.save("用户喜欢用中文交流", MemoryType.USER,
+                         MemoryMetadata(name="语言偏好", description="用户喜欢用中文交流",
+                                        type=MemoryType.USER))
+        assert isinstance(first, MemoryResult)
+
+        # Completely different topic — no duplicate detected
+        second = mgr.save("项目使用 FastAPI 框架", MemoryType.PROJECT,
+                          MemoryMetadata(name="技术栈", description="项目使用 FastAPI 框架",
+                                         type=MemoryType.PROJECT),
+                          upsert=True)
+        assert isinstance(second, MemoryResult)
+        assert second.data.filename != first.data.filename
+        assert second.data.content == "项目使用 FastAPI 框架"
+
+
+class TestSemanticDuplicate:
+    """Tests for LLM-based semantic duplicate detection."""
+
+    def test_semantic_dup_detects_same_topic_different_name(self, mgr):
+        """Semantic matching should detect same topic even with different names."""
+        called = []
+
+        def mock_llm(prompt: str) -> str:
+            called.append(prompt)
+            # Return the filename of the first entry
+            return "user-语言偏好.md"
+
+        mgr.ranker._llm_query = mock_llm
+
+        first = mgr.save("用户喜欢用中文交流", MemoryType.USER,
+                         MemoryMetadata(name="语言偏好", description="用户喜欢用中文交流",
+                                        type=MemoryType.USER))
+        fname = first.data.filename
+
+        # Second save with different name/slug — slug check fails, CJK may or may not
+        # Semantic check finds the match via LLM
+        second = mgr.save("用户要求称呼他为wishing，喜欢英文名。不再使用中文。", MemoryType.USER,
+                          MemoryMetadata(name="用户要求称呼他为wishing",
+                                         description="用户要求称呼他为wishing，喜欢英文名。",
+                                         type=MemoryType.USER),
+                          upsert=True)
+        assert isinstance(second, MemoryResult)
+        assert len(called) > 0
+        # Should have updated the existing entry
+        assert second.data.filename == fname
+
+    def test_semantic_dup_no_match_creates_new(self, mgr):
+        """LLM says NONE → no duplicate, creates new file."""
+        called = []
+
+        def mock_llm(prompt: str) -> str:
+            called.append(prompt)
+            return "NONE"
+
+        mgr.ranker._llm_query = mock_llm
+
+        first = mgr.save("用户喜欢用中文交流", MemoryType.USER,
+                         MemoryMetadata(name="语言偏好", description="用户喜欢用中文交流",
+                                        type=MemoryType.USER))
+
+        second = mgr.save("项目使用 PostgreSQL 数据库", MemoryType.PROJECT,
+                          MemoryMetadata(name="数据库选型",
+                                         description="项目使用 PostgreSQL 数据库",
+                                         type=MemoryType.PROJECT),
+                          upsert=True)
+        assert isinstance(second, MemoryResult)
+        assert len(called) > 0
+        assert second.data.filename != first.data.filename
+
+    def test_semantic_dup_no_llm_skips(self, mgr):
+        """When no LLM is available, semantic check is skipped gracefully."""
+        assert mgr.ranker._llm_query is None
+
+        first = mgr.save("用户喜欢用中文交流", MemoryType.USER)
+        second = mgr.save("用户现在更喜欢用英文", MemoryType.USER,
+                          MemoryMetadata(name="用户更喜欢英文",
+                                         description="用户现在更喜欢用英文交流",
+                                         type=MemoryType.USER),
+                          upsert=True)
+        # Both are created — semantic check was skipped, CJK overlap may or may not hit
+        assert isinstance(first, MemoryResult)
+        assert isinstance(second, MemoryResult)
+
 
 class TestUpdate:
     def test_update_content(self, mgr):

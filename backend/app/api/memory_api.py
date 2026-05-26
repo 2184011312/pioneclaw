@@ -136,6 +136,7 @@ class MemoryCreateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[list[str]] = None
+    upsert: bool = False  # POST 语义是创建，更新请用 PUT /memory/{filename}
 
 
 class MemoryUpdateRequest(BaseModel):
@@ -269,7 +270,7 @@ def create_memory(
         tags=request.tags or [],
     )
 
-    response = mm.save(request.content, request.type, meta)
+    response = mm.save(request.content, request.type, meta, upsert=request.upsert)
 
     if isinstance(response, MemoryFailure):
         err = response.error

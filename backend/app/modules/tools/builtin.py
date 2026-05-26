@@ -2162,11 +2162,17 @@ class MemorySaveTool(BaseTool):
             description="记忆描述（可选，留空自动生成）",
             default="",
         ),
+        "upsert": ToolParameter(
+            type="boolean",
+            description="如果同名或同主题记忆已存在，是否更新而非新建。默认 true",
+            default=True,
+        ),
     }
     required = ["content"]
 
     async def execute(self, content: str, type: str = "user",
-                      name: str = "", description: str = "", **kwargs) -> str:
+                      name: str = "", description: str = "",
+                      upsert: bool = True, **kwargs) -> str:
         try:
             from pathlib import Path
 
@@ -2189,7 +2195,7 @@ class MemorySaveTool(BaseTool):
                 type=MemoryType(type),
             )
 
-            response = mm.save(content, type, meta)
+            response = mm.save(content, type, meta, upsert=upsert)
             if isinstance(response, MemoryFailure):
                 err = response.error
                 return json.dumps({"success": False, "error": err.message if err else "unknown"})

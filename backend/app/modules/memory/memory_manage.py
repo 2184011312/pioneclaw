@@ -129,8 +129,13 @@ class MemoryManage:
         content: str,
         mem_type: Union[MemoryType, str],
         metadata: Optional[MemoryMetadata] = None,
+        upsert: bool = False,
     ) -> MemoryResponse:
-        """Save a new memory entry."""
+        """Save a new memory entry.
+
+        When upsert=True and a duplicate is detected, the existing entry is
+        updated with the new content instead of returning the old entry.
+        """
         try:
             if not content or not content.strip():
                 return MemoryFailure(
@@ -158,8 +163,10 @@ class MemoryManage:
             filename = generate_filename(mem_type, meta.name)
 
             existing_manifest = self.store.scan_files()
-            dup = self._check_duplicate(meta, filename, existing_manifest)
+            dup = self._find_duplicate(meta, existing_manifest)
             if dup:
+                if upsert:
+                    return self.update(dup.filename, content, meta)
                 return MemoryResult(True, dup)
 
             now = datetime.now(timezone.utc)
@@ -403,10 +410,9 @@ class MemoryManage:
     def _check_duplicate(
         self,
         meta: MemoryMetadata,
-        filename: str,
         manifest: list,
     ) -> Optional[MemoryEntry]:
-        """Check if a memory with the same filename or highly similar description exists."""
+        """Check if a memory with the same slug or highly similar description exists."""
         slug = MemoryStore.generate_slug(meta.name)
         for m in manifest:
             existing_slug = MemoryStore.generate_slug(m.name)
@@ -433,3 +439,142 @@ class MemoryManage:
                         pass
                     break
         return None
+
+    def _find_duplicate(
+        self,
+        meta: MemoryMetadata,
+        manifest: list,
+    ) -> Optional[MemoryEntry]:
+        """Find a duplicate memory using all available detection methods.
+
+        Checks in order: slug match → exact description → CJK 2-gram overlap
+        → LLM semantic match. Earlier checks are cheaper and run first.
+        """
+        dup = self._check_duplicate(meta, manifest)
+        if dup:
+            return dup
+
+        if self.ranker.has_llm:
+            dup = self._check_semantic_duplicate(meta, manifest)
+            if dup:
+                return dup
+
+        return None
+
+    def _check_semantic_duplicate(
+        self,
+        meta: MemoryMetadata,
+        manifest: list,
+    ) -> Optional[MemoryEntry]:
+        """Use LLM to check if the new memory is semantically the same topic
+        as any existing memory. Returns the matching entry or None.
+
+        Feeds MEMORY.md index content (not per-file frontmatter) to the LLM —
+        one file read instead of N.  The index is capped at 25KB / 200 lines,
+        so the prompt size is bounded independently of the number of files.
+
+        Only called when faster checks (slug, exact, CJK overlap) have failed.
+        LLM call failures are silently degraded — they never block save().
+        """
+        if not meta.description:
+            return None
+
+        try:
+            import os
+
+            index_path = self.index.index_path
+            if not os.path.exists(index_path):
+                return None
+
+            with open(index_path, "r", encoding="utf-8") as f:
+                index_content = f.read()
+
+            # Defensive truncation: even though write-path truncate() keeps
+            # the index within limits, the read path should not trust it blindly.
+            lines = index_content.splitlines()
+            if len(lines) > 200:
+                index_content = "\n".join(lines[:200])
+            encoded = index_content.encode("utf-8")
+            if len(encoded) > 25 * 1024:
+                index_content = encoded[:25 * 1024].decode("utf-8", errors="ignore")
+
+            if not index_content.strip():
+                return None
+
+            prompt = (
+                "你是一个记忆去重助手。判断新记忆是否与已有记忆讨论同一主题/事实/偏好。\n"
+                "\n"
+                f"新记忆名称: {meta.name}\n"
+                f"新记忆描述: {meta.description}\n"
+                "\n"
+                "已有记忆索引 (MEMORY.md):\n"
+                f"{index_content}\n"
+                "\n"
+                "如果新记忆与某条已有记忆讨论的是同一件事（即使表述不同），返回该记忆的文件名。\n"
+                "判断标准: 两条记忆是否在描述同一个用户偏好、同一项目约定、同一条用户反馈？\n"
+                "如果新记忆是全新内容，返回 NONE。\n"
+                "只返回文件名或 NONE，不要其他文字。\n"
+            )
+
+            response = self.ranker.query(prompt)
+            if response is None:
+                return None
+
+            filename = self._extract_filename_from_llm(response)
+            if filename is None:
+                return None
+
+            for m in manifest:
+                if m.filename == filename or m.filename == f"{filename}.md":
+                    try:
+                        return self.store.read_file(m.filename)
+                    except Exception:
+                        return None
+
+        except Exception:
+            logger.debug("LLM semantic duplicate check failed, skipping", exc_info=True)
+
+        return None
+
+    @staticmethod
+    def _extract_filename_from_llm(response: str) -> Optional[str]:
+        """Parse an LLM response into a bare filename (without .md suffix).
+
+        Handles common LLM output variations:
+          - "user-称呼偏好.md"
+          - '"user-称呼偏好.md"'
+          - '`user-称呼偏好.md`'
+          - "文件名是 user-称呼偏好.md"
+          - "```\nuser-称呼偏好.md\n```"
+        """
+        import re
+
+        text = response.strip()
+
+        if not text or text.upper() == "NONE":
+            return None
+
+        # 1. Remove markdown code fences
+        text = re.sub(r"^```\w*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+        # 2. Remove wrapping quotes and backticks
+        text = text.strip().strip("\"'`")
+
+        # 3. Try to extract a valid memory filename via regex
+        #    Matches: {type}-{slug}.md where slug is word chars + hyphens
+        match = re.search(r"[\w\-]+\.md", text)
+        if match:
+            basename = match.group(0)
+        else:
+            # Fallback: use the whole cleaned string as-is
+            basename = text.strip().strip(".")
+
+        # 4. Strip .md suffix for matching (caller will compare both forms)
+        if basename.endswith(".md"):
+            basename = basename[:-3]
+
+        if not basename:
+            return None
+
+        return basename
