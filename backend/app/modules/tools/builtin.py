@@ -781,13 +781,12 @@ class ExecTool(BaseTool):
 
 
 class EditFileTool(BaseTool):
-    """编辑文件工具 — 精确文本替换或按行编辑"""
+    """编辑文件工具 — 精确文本替换"""
 
     name = "edit_file"
     description = (
-        "编辑文件内容。两种模式："
-        "1) 文本替换：提供 old_text 和 new_text，将文件中的 old_text 替换为 new_text（old_text 需唯一）；"
-        "2) 行编辑：提供 start_line 和 new_text，替换指定行；设置 insert=true 则在行前插入"
+        "编辑文件内容。提供 old_text 和 new_text，将文件中唯一的 old_text 精确替换为 new_text。"
+        "old_text 必须在文件中唯一存在。编辑前建议先用 read_file 确认内容。"
     )
     parameters = {
         "path": ToolParameter(
@@ -837,13 +836,9 @@ class EditFileTool(BaseTool):
             )
 
             sp = str(safe_path)
-            # 模式判断
-            if start_line > 0:
-                return await self._edit_by_lines(sp, start_line, end_line, new_text, insert)
-            elif old_text:
-                return await self._edit_by_text(sp, old_text, new_text)
-            else:
-                return "错误: 需要提供 old_text（文本模式）或 start_line（行编辑模式）"
+            if not old_text:
+                return "错误: 需要提供 old_text"
+            return await self._edit_by_text(sp, old_text, new_text)
 
         except FileNotFoundError:
             return f"错误: 文件不存在 - {path}"
@@ -871,39 +866,6 @@ class EditFileTool(BaseTool):
         with open(path, 'w', encoding='utf-8') as f:
             f.write(new_content)
         return f"已编辑 {path}（替换 1 处）"
-
-    async def _edit_by_lines(self, path: str, start_line: int,
-                             end_line: int, new_text: str, insert: bool) -> str:
-        with open(path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        total = len(lines)
-        if start_line < 1 or start_line > total + 1:
-            return f"错误: start_line ({start_line}) 超出范围 (1-{total})"
-
-        if end_line <= 0:
-            end_line = start_line
-
-        if insert:
-            # 在 start_line 前插入
-            idx = start_line - 1
-            lines.insert(idx, new_text.rstrip('\n') + '\n')
-            action = f"在行 {start_line} 前插入"
-        elif new_text == "":
-            # 删除行
-            del lines[start_line - 1:end_line]
-            action = f"删除行 {start_line}-{end_line}"
-        else:
-            # 替换行
-            replacement = new_text.rstrip('\n').split('\n')
-            replacement = [line + '\n' for line in replacement]
-            lines[start_line - 1:end_line] = replacement
-            action = f"替换行 {start_line}-{end_line}"
-
-        with open(path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-        return f"已编辑 {path}（{action}）"
-
 
 class FileSearchTool(BaseTool):
     """文件搜索工具 — 按通配符模式搜索文件"""

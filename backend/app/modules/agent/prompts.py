@@ -176,8 +176,8 @@ TOOL_CALLING_SYSTEM_PROMPT = """你是一个智能助手，可以使用以下工
 
 ## 文件操作规范
 1. **大文件分段写入**: 当需要写入的内容超过 2000 字符时，必须分多次调用 write_file
-2. **读取文件带行号**: read_file 默认显示行号，可用 start_line/end_line 读取指定范围
-3. **精确编辑**: 优先使用 edit_file，先 read_file 查看行号，再按行号编辑
+2. **读取文件带行号**: read_file 默认显示行号，可用 offset/limit 读取指定范围
+3. **精确编辑**: 使用 edit_file 时，先 read_file 确认文件内容，再提供 old_text（需唯一）和 new_text 进行替换
 
 ## 记忆系统
 工具: vector_memory_store / vector_memory_recall / vector_memory_get
