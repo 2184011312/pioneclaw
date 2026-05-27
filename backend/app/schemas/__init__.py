@@ -1,3 +1,7 @@
+from app.schemas.skill_eval import (
+    EvalDimension, Suggestion, GradingResult, ComparisonResult, RubricScore,
+    OptimizationResult, BenchmarkResult, SkillEvalResultResponse, Change,
+)
 from app.schemas.approval import (
     ApprovalBrief,
     ApprovalCreate,

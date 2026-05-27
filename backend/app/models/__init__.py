@@ -18,6 +18,7 @@ from app.models.models import (
     Session,
     SessionMessage,
     Skill,
+    SkillEvalResult,
     SkillScope,
     SystemSetting,
     Task,
@@ -60,6 +61,7 @@ __all__ = [
     "AgentStatus",
     "RunnerStatus",
     "SkillScope",
+    "SkillEvalResult",
     # 新增模型
     "Organization",
     "Permission",

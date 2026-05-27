@@ -3,10 +3,11 @@ from __future__ import annotations
 import enum
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -747,3 +748,24 @@ class TaskDependency(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
+
+class SkillEvalResult(Base):
+    __tablename__ = "skill_eval_results"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    skill_name: Mapped[str] = mapped_column(String(255), index=True)
+    eval_type: Mapped[str] = mapped_column(String(50))
+    eval_mode: Mapped[str] = mapped_column(String(50))
+    overall_score: Mapped[float] = mapped_column(Float)
+    dimensions: Mapped[list] = mapped_column(JSON, default=list)
+    static_checks: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    redflag_hits: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    suggestions: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    optimized_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    diff_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    llm_raw_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary: Mapped[str] = mapped_column(Text)
+    model_used: Mapped[str] = mapped_column(String(100), default="")
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
