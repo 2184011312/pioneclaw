@@ -524,6 +524,31 @@ pioneclaw skill reload
 
 ---
 
+## 可选功能
+
+### 浏览器自动化（Arc Tunnel）
+
+PioneClaw 可选集成 [Arc Tunnel](https://github.com/jins-acl/arc-tunnel) 提供 AI 浏览器自动化能力，支持页面导航、点击、输入、截图、录制回放等操作。
+
+**启用方式**：
+
+```bash
+# 1. 在 backend/.env 中添加
+ARC_TUNNEL_ENABLED=true
+
+# 2. 安装 Chrome/Edge 扩展
+# 打开 chrome://extensions/ → 开发者模式 → 加载已解压扩展
+# 选择 external/arc-tunnel/extension/dist 目录
+
+# 3. 启动 PioneClaw，arc-tunnel 自动连接
+```
+
+启用后，15 个浏览器工具自动注册为 `mcp__arc-tunnel__*` 命名空间工具。
+
+详细配置见 [`docs/arc-tunnel-setup.md`](docs/arc-tunnel-setup.md)。
+
+---
+
 ## 测试覆盖
 
 平台拥有 **600+** 单元测试，覆盖所有核心模块：

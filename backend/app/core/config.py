@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # Stage QQ: Provider 预检（启动时验证 LLM provider 连通性）
     PROVIDER_PREFLIGHT_ENABLED: bool = False  # 默认关闭，生产环境可开启
 
+    # Arc Tunnel 浏览器自动化（可选）
+    ARC_TUNNEL_ENABLED: bool = False  # 设为 true 启用内置 arc-tunnel MCP server
+
     class Config:
         env_file = ".env"
         case_sensitive = True

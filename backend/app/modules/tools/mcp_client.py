@@ -494,6 +494,8 @@ def unregister_mcp_namespace_tools(server_name: str) -> None:
 async def auto_discover_mcp_servers() -> dict:
     """启动时从 DB 加载 enabled 的 MCP 服务器，注册并连接
 
+    同时自动检测并注册内置的 arc-tunnel MCP server（如果存在）。
+
     Returns:
         {"connected": int, "failed": int, "errors": list}
     """
@@ -505,6 +507,48 @@ async def auto_discover_mcp_servers() -> dict:
     registry = get_mcp_registry()
     summary: dict = {"connected": 0, "failed": 0, "errors": []}
 
+    # ── 自动注册内置 arc-tunnel MCP server（可选，需配置启用）─────────────────
+    try:
+        from app.core.config import settings
+
+        if settings.ARC_TUNNEL_ENABLED:
+            import shutil
+            from pathlib import Path
+
+            # 从 backend/app/modules/tools/mcp_client.py 推导项目根目录
+            project_root = Path(__file__).parent.parent.parent.parent.parent
+            mcp_server_js = (
+                project_root / "external" / "arc-tunnel" / "mcp-server" / "dist" / "mcp-server.js"
+            )
+
+            if mcp_server_js.exists() and shutil.which("node"):
+                if "arc-tunnel" not in registry._servers:
+                    registry.register_server(
+                        name="arc-tunnel",
+                        transport="stdio",
+                        command="node",
+                        args=[str(mcp_server_js)],
+                        env={"WS_PORT": "8765"},
+                    )
+                    conn = await registry.connect_server("arc-tunnel")
+                    if conn.status == "connected":
+                        summary["connected"] += 1
+                        logger.info(
+                            f"[MCP] 内置 arc-tunnel 已连接: {len(conn.tools)} 工具"
+                        )
+                    else:
+                        summary["failed"] += 1
+                        summary["errors"].append(
+                            {"server": "arc-tunnel", "error": conn.error_message}
+                        )
+            else:
+                logger.warning(
+                    "[MCP] ARC_TUNNEL_ENABLED=true 但 arc-tunnel 未找到或 node 不可用"
+                )
+    except Exception as e:
+        logger.debug(f"[MCP] 内置 arc-tunnel 自动注册跳过: {e}")
+
+    # ── 从 DB 加载用户配置的 MCP 服务器 ─────────────────────────────
     try:
         async with async_session_maker() as session:
             result = await session.execute(
