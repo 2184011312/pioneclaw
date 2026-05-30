@@ -526,11 +526,13 @@ pioneclaw skill reload
 
 ## 可选功能
 
-### 浏览器自动化（Arc Tunnel）
+### 浏览器自动化（Arc Tunnel）— 实验性功能
+
+> ⚠️ **实验性功能**：Arc Tunnel 为可选外围增强模块，默认关闭，不影响现有用户。建议仅在隔离环境/测试浏览器中使用。
 
 PioneClaw 可选集成 [Arc Tunnel](https://github.com/jins-acl/arc-tunnel) 提供 AI 浏览器自动化能力，支持页面导航、点击、输入、截图、录制回放等操作。
 
-**启用方式**：
+**启用方式**:
 
 ```bash
 # 1. 初始化 submodule（首次 clone 或更新后需要）
