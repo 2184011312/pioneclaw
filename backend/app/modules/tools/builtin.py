@@ -14,7 +14,6 @@ import json
 import logging
 import operator
 import os
-import re
 import shlex
 import uuid
 from datetime import datetime
