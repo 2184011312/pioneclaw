@@ -3,6 +3,7 @@ MCP 工具测试：MCPTool, ListMcpResourcesTool, ReadMcpResourceTool, McpAuthTo
 以及 MCPToolRegistry 客户端测试
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -586,6 +587,9 @@ class TestMCPAutoDiscover:
     @pytest.mark.asyncio
     async def test_auto_discover_arc_tunnel_success(self):
         """ARC_TUNNEL_ENABLED=true 且文件存在时，成功注册并连接"""
+        import tempfile
+        from pathlib import Path
+
         from app.modules.tools.mcp_client import auto_discover_mcp_servers
 
         mock_session = AsyncMock()
@@ -605,24 +609,31 @@ class TestMCPAutoDiscover:
         mock_registry.register_server = MagicMock()
         mock_registry.connect_server = AsyncMock(return_value=mock_conn)
 
-        with (
-            patch("app.core.database.async_session_maker", mock_session_maker),
-            patch("app.modules.tools.mcp_client.get_mcp_registry", return_value=mock_registry),
-            patch("app.core.config.settings.ARC_TUNNEL_ENABLED", True),
-            patch("app.core.config.settings.ARC_TUNNEL_WS_PORT", "9876"),
-            patch("pathlib.Path.exists", return_value=True),
-            patch("shutil.which", return_value="/usr/bin/node"),
-        ):
-            result = await auto_discover_mcp_servers()
-            assert result["connected"] == 1
-            assert result["failed"] == 0
-            mock_registry.register_server.assert_called_once()
-            call_kwargs = mock_registry.register_server.call_args.kwargs
-            assert call_kwargs["env"]["WS_PORT"] == "9876"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mcp_js = Path(tmpdir) / "external" / "arc-tunnel" / "mcp-server" / "dist" / "mcp-server.js"
+            mcp_js.parent.mkdir(parents=True, exist_ok=True)
+            mcp_js.write_text("")  # 创建空文件模拟预构建产物
+
+            with (
+                patch("app.core.database.async_session_maker", mock_session_maker),
+                patch("app.modules.tools.mcp_client.get_mcp_registry", return_value=mock_registry),
+                patch("app.core.config.settings.ARC_TUNNEL_ENABLED", True),
+                patch("app.core.config.settings.ARC_TUNNEL_WS_PORT", "9876"),
+                patch("shutil.which", return_value="/usr/bin/node"),
+            ):
+                result = await auto_discover_mcp_servers(project_root=Path(tmpdir))
+                assert result["connected"] == 1
+                assert result["failed"] == 0
+                mock_registry.register_server.assert_called_once()
+                call_kwargs = mock_registry.register_server.call_args.kwargs
+                assert call_kwargs["env"]["WS_PORT"] == "9876"
 
     @pytest.mark.asyncio
     async def test_auto_discover_arc_tunnel_not_found(self):
         """ARC_TUNNEL_ENABLED=true 但 arc-tunnel 文件不存在时跳过"""
+        import tempfile
+        from pathlib import Path
+
         from app.modules.tools.mcp_client import auto_discover_mcp_servers
 
         mock_session = AsyncMock()
@@ -636,15 +647,15 @@ class TestMCPAutoDiscover:
         mock_registry = MagicMock()
         mock_registry._servers = {}
 
-        with (
-            patch("app.core.database.async_session_maker", mock_session_maker),
-            patch("app.modules.tools.mcp_client.get_mcp_registry", return_value=mock_registry),
-            patch("app.core.config.settings.ARC_TUNNEL_ENABLED", True),
-            patch("pathlib.Path.exists", return_value=False),
-        ):
-            result = await auto_discover_mcp_servers()
-            assert result["connected"] == 0
-            assert result["failed"] == 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch("app.core.database.async_session_maker", mock_session_maker),
+                patch("app.modules.tools.mcp_client.get_mcp_registry", return_value=mock_registry),
+                patch("app.core.config.settings.ARC_TUNNEL_ENABLED", True),
+            ):
+                result = await auto_discover_mcp_servers(project_root=Path(tmpdir))
+                assert result["connected"] == 0
+                assert result["failed"] == 0
 
     @pytest.mark.asyncio
     async def test_auto_discover_arc_tunnel_disabled(self):

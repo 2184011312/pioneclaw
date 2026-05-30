@@ -16,8 +16,10 @@ MCP 客户端抽象层
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -491,10 +493,13 @@ def unregister_mcp_namespace_tools(server_name: str) -> None:
 # ==================== 自动发现 ====================
 
 
-async def auto_discover_mcp_servers() -> dict:
+async def auto_discover_mcp_servers(project_root: Path | None = None) -> dict:
     """启动时从 DB 加载 enabled 的 MCP 服务器，注册并连接
 
     同时自动检测并注册内置的 arc-tunnel MCP server（如果存在）。
+
+    Args:
+        project_root: 可选，指定项目根目录（用于测试）
 
     Returns:
         {"connected": int, "failed": int, "errors": list}
@@ -513,10 +518,12 @@ async def auto_discover_mcp_servers() -> dict:
 
         if settings.ARC_TUNNEL_ENABLED:
             import shutil
-            from pathlib import Path
 
-            # 从 backend/app/modules/tools/mcp_client.py 推导项目根目录
-            project_root = Path(__file__).parent.parent.parent.parent.parent
+            # 稳健推导项目根目录：向上查找包含 external/arc-tunnel 的目录
+            if project_root is None:
+                project_root = Path(__file__).resolve().parent
+                while not (project_root / "external" / "arc-tunnel").exists() and project_root.parent != project_root:
+                    project_root = project_root.parent
             mcp_server_js = (
                 project_root / "external" / "arc-tunnel" / "mcp-server" / "dist" / "mcp-server.js"
             )
@@ -536,7 +543,7 @@ async def auto_discover_mcp_servers() -> dict:
                     transport="stdio",
                     command="node",
                     args=[str(mcp_server_js)],
-                    env={"WS_PORT": settings.ARC_TUNNEL_WS_PORT},
+                    env={**os.environ, "WS_PORT": settings.ARC_TUNNEL_WS_PORT},
                 )
                 conn = await registry.connect_server("arc-tunnel")
                 if conn.status == "connected":
