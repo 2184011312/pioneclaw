@@ -1286,26 +1286,15 @@ class GrepTool(BaseTool):
 
 
 class ScreenshotTool(BaseTool):
-    """截图工具 — 桌面截图 (mss) 和网页截图 (playwright)"""
+    """截图工具 — 桌面截图 (mss)"""
 
     name = "screenshot"
     description = (
-        "截取桌面或网页截图。"
-        "桌面模式 (mode='desktop')：截取指定显示器的屏幕，可选 monitor 编号。"
-        "网页模式 (mode='webpage')：对指定 URL 进行全页或视口截图，可选 viewport 尺寸和等待时间。"
+        "截取桌面截图。"
+        "截取指定显示器的屏幕，可选 monitor 编号。"
         "截图保存为 PNG 格式，返回文件路径和尺寸信息。"
     )
     parameters = {
-        "mode": ToolParameter(
-            type="string",
-            description="截图模式：'desktop' 桌面截图，'webpage' 网页截图",
-            enum=["desktop", "webpage"],
-        ),
-        "url": ToolParameter(
-            type="string",
-            description="网页 URL（webpage 模式必填）",
-            default="",
-        ),
         "output_path": ToolParameter(
             type="string",
             description="输出文件路径（可选，默认自动生成时间戳文件名）",
@@ -1313,47 +1302,13 @@ class ScreenshotTool(BaseTool):
         ),
         "monitor": ToolParameter(
             type="integer",
-            description="显示器编号，0=所有显示器（desktop 模式，默认 0）",
+            description="显示器编号，0=所有显示器（默认 0）",
             default=0,
         ),
-        "full_page": ToolParameter(
-            type="boolean",
-            description="是否全页截图（webpage 模式，默认 false）",
-            default=False,
-        ),
-        "viewport_width": ToolParameter(
-            type="integer",
-            description="视口宽度，默认 1280（webpage 模式）",
-            default=1280,
-        ),
-        "viewport_height": ToolParameter(
-            type="integer",
-            description="视口高度，默认 720（webpage 模式）",
-            default=720,
-        ),
-        "wait_time": ToolParameter(
-            type="integer",
-            description="页面加载后等待时间，毫秒（webpage 模式，默认 1000）",
-            default=1000,
-        ),
-        "timeout": ToolParameter(
-            type="integer",
-            description="页面加载超时，毫秒（webpage 模式，默认 30000）",
-            default=30000,
-        ),
     }
-    required = ["mode"]
 
-    async def execute(self, mode: str, **kwargs) -> str:
-        if mode == "desktop":
-            return await self._capture_desktop(**kwargs)
-        elif mode == "webpage":
-            return await self._capture_webpage(**kwargs)
-        else:
-            return json.dumps({
-                "success": False,
-                "error": f"无效模式 '{mode}'，必须是 'desktop' 或 'webpage'",
-            })
+    async def execute(self, output_path: str = "", monitor: int = 0, **kwargs) -> str:
+        return await self._capture_desktop(output_path=output_path, monitor=monitor)
 
     async def _capture_desktop(self, **kwargs) -> str:
         try:
@@ -1399,68 +1354,6 @@ class ScreenshotTool(BaseTool):
                 })
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
-
-    async def _capture_webpage(self, **kwargs) -> str:
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            return json.dumps({
-                "success": False,
-                "error": "playwright 库未安装。安装命令: pip install playwright && playwright install chromium",
-            })
-
-        url = kwargs.get("url", "")
-        output_path = kwargs.get("output_path", "")
-        full_page = kwargs.get("full_page", False)
-        viewport_width = kwargs.get("viewport_width", 1280)
-        viewport_height = kwargs.get("viewport_height", 720)
-        wait_time = kwargs.get("wait_time", 1000)
-        timeout = kwargs.get("timeout", 30000)
-
-        if not url:
-            return json.dumps({"success": False, "error": "webpage 模式必须提供 url 参数"})
-        if not url.startswith(("http://", "https://")):
-            return json.dumps({"success": False, "error": f"无效 URL '{url}'，必须以 http:// 或 https:// 开头"})
-
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    viewport={"width": viewport_width, "height": viewport_height}
-                )
-                page = await context.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=timeout)
-
-                if wait_time > 0:
-                    await asyncio.sleep(wait_time / 1000)
-
-                if not output_path:
-                    from datetime import datetime
-                    from urllib.parse import urlparse
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    domain = urlparse(url).netloc.replace(".", "_")
-                    output_path = f"screenshots/webpage_{domain}_{timestamp}.png"
-
-                full_path = os.path.abspath(output_path)
-                os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
-
-                await page.screenshot(path=str(full_path), full_page=full_page)
-                page_title = await page.title()
-                await browser.close()
-
-                file_size = os.path.getsize(full_path)
-                return json.dumps({
-                    "success": True,
-                    "path": str(full_path),
-                    "url_source": url,
-                    "title": page_title,
-                    "viewport": f"{viewport_width}x{viewport_height}",
-                    "full_page": full_page,
-                    "file_size": file_size,
-                })
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-
 
 # 媒体类型扩展名映射
 _IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'}
@@ -2825,226 +2718,6 @@ class ChannelTool(BaseTool):
             return json.dumps({"success": False, "error": str(e)})
 
 
-# 浏览器页面缓存（模块级别，同一会话内复用）
-_browser_page = None
-_browser_instance = None
-
-
-class BrowserTool(BaseTool):
-    """浏览器自动化工具 — 打开网页、提取内容、点击交互"""
-
-    name = "browser"
-    description = (
-        "浏览器自动化工具，用于打开网页、提取内容和交互操作。\n"
-        "支持的操作：\n"
-        "- content: 打开 URL 并提取页面文本（清洗后的正文）\n"
-        "- links: 打开 URL 并提取所有链接\n"
-        "- extract: 打开 URL，按 CSS 选择器提取指定元素内容\n"
-        "- click: 点击页面中匹配文本的元素，返回点击后的页面内容\n"
-        "- fill: 在输入框中填入文本（需先 navigate 打开页面）\n"
-        "- screenshot: 对当前页面截图\n"
-        "- close: 关闭浏览器"
-    )
-    parameters = {
-        "action": ToolParameter(
-            type="string",
-            description="操作类型: content、links、extract、click、fill、screenshot、close",
-            enum=["content", "links", "extract", "click", "fill", "screenshot", "close"],
-        ),
-        "url": ToolParameter(
-            type="string",
-            description="目标 URL（content/links/extract 操作需要）",
-            default="",
-        ),
-        "selector": ToolParameter(
-            type="string",
-            description="CSS 选择器（extract 操作需要），如 'div.article'、'p'",
-            default="",
-        ),
-        "target_text": ToolParameter(
-            type="string",
-            description="要点击或填写的目标文本（click: 按钮/链接文本; fill: 要填入的内容）",
-            default="",
-        ),
-        "input_selector": ToolParameter(
-            type="string",
-            description="输入框的 CSS 选择器（fill 操作需要），如 'input[name=q]'、'#search'",
-            default="",
-        ),
-        "output_path": ToolParameter(
-            type="string",
-            description="截图输出路径（screenshot 操作可选）",
-            default="",
-        ),
-    }
-    required = ["action"]
-
-    async def execute(self, action: str, url: str = "", selector: str = "",
-                      target_text: str = "", input_selector: str = "",
-                      output_path: str = "", **kwargs) -> str:
-        global _browser_page, _browser_instance
-
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            return json.dumps({
-                "success": False,
-                "error": "playwright 未安装。安装命令: pip install playwright && playwright install chromium",
-            })
-
-        try:
-            # 关闭浏览器
-            if action == "close":
-                if _browser_instance:
-                    await _browser_instance.close()
-                    _browser_instance = None
-                    _browser_page = None
-                return json.dumps({"success": True, "message": "浏览器已关闭"})
-
-            # 需要页面的操作：确保浏览器已启动
-            if action in ("content", "links", "extract", "click", "fill", "screenshot"):
-                if not url and action in ("content", "links", "extract"):
-                    return json.dumps({"success": False, "error": f"{action} 操作需要提供 url"})
-
-                # 启动或复用浏览器
-                if _browser_instance is None:
-                    _browser_instance = await async_playwright().__aenter__()
-                    browser = await _browser_instance.chromium.launch(headless=True)
-                    context = await browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    )
-                    _browser_page = await context.new_page()
-                else:
-                    browser = _browser_instance
-
-                page = _browser_page
-
-                # navigate 如果需要
-                if url and action in ("content", "links", "extract"):
-                    await page.goto(url, wait_until="networkidle", timeout=30000)
-                    await asyncio.sleep(0.5)
-
-                if action == "content":
-                    # 提取页面文本（从 body 中获取）
-                    text = await page.evaluate("""() => {
-                        const body = document.body;
-                        if (!body) return '';
-                        const clone = body.cloneNode(true);
-                        // 移除 script, style, nav, footer, header
-                        clone.querySelectorAll('script,style,nav,footer,header,aside,noscript,iframe').forEach(e => e.remove());
-                        return clone.innerText;
-                    }""")
-                    title = await page.title()
-                    text = re.sub(r'\n{3,}', '\n\n', text)  # 压缩空行
-                    if len(text) > 5000:
-                        text = text[:5000] + "\n... (内容已截断)"
-                    return json.dumps({
-                        "success": True,
-                        "url": page.url,
-                        "title": title,
-                        "content": text,
-                    }, ensure_ascii=False)
-
-                elif action == "links":
-                    links = await page.evaluate("""() => {
-                        return Array.from(document.querySelectorAll('a[href]')).map(a => ({
-                            text: a.innerText.trim().substring(0, 100),
-                            href: a.href
-                        })).filter(l => l.href && !l.href.startsWith('javascript:'));
-                    }""")
-                    if len(links) > 100:
-                        links = links[:100]
-                    return json.dumps({
-                        "success": True,
-                        "url": page.url,
-                        "title": await page.title(),
-                        "links": links,
-                        "total": len(links),
-                    }, ensure_ascii=False)
-
-                elif action == "extract":
-                    if not selector:
-                        return json.dumps({"success": False, "error": "extract 操作需要提供 selector"})
-                    elements = await page.evaluate("""(sel) => {
-                        return Array.from(document.querySelectorAll(sel)).map(el => ({
-                            text: el.innerText.trim().substring(0, 500),
-                            tag: el.tagName.toLowerCase()
-                        }));
-                    }""", selector)
-                    if len(elements) > 50:
-                        elements = elements[:50]
-                    return json.dumps({
-                        "success": True,
-                        "selector": selector,
-                        "elements": elements,
-                        "total": len(elements),
-                    }, ensure_ascii=False)
-
-                elif action == "click":
-                    if not target_text:
-                        return json.dumps({"success": False, "error": "click 操作需要提供 target_text"})
-                    # 点击包含指定文本的元素
-                    clicked = await page.evaluate("""(text) => {
-                        const elements = document.querySelectorAll('a,button,input[type=submit],input[type=button],[role=button]');
-                        for (const el of elements) {
-                            if (el.innerText && el.innerText.trim().includes(text)) {
-                                el.click();
-                                return el.innerText.trim().substring(0, 200);
-                            }
-                        }
-                        return null;
-                    }""", target_text)
-                    if not clicked:
-                        return json.dumps({"success": False, "error": f"未找到包含 '{target_text}' 的可点击元素"})
-                    await asyncio.sleep(1)
-                    text = await page.evaluate("() => document.body ? document.body.innerText.substring(0, 3000) : ''")
-                    return json.dumps({
-                        "success": True,
-                        "clicked": clicked,
-                        "url": page.url,
-                        "content": text,
-                    }, ensure_ascii=False)
-
-                elif action == "fill":
-                    if not input_selector or not target_text:
-                        return json.dumps({"success": False, "error": "fill 操作需要提供 input_selector 和 target_text"})
-                    await page.fill(input_selector, target_text)
-                    return json.dumps({
-                        "success": True,
-                        "selector": input_selector,
-                        "filled": target_text,
-                    }, ensure_ascii=False)
-
-                elif action == "screenshot":
-                    if not output_path:
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        output_path = f"screenshots/browser_{timestamp}.png"
-                    full_path = os.path.abspath(output_path)
-                    os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
-                    await page.screenshot(path=str(full_path), full_page=False)
-                    file_size = os.path.getsize(full_path)
-                    return json.dumps({
-                        "success": True,
-                        "path": str(full_path),
-                        "file_size": file_size,
-                    })
-
-            return json.dumps({"success": False, "error": f"未知操作: {action}"})
-
-        except Exception as e:
-            # 发生错误时清理浏览器状态
-            error_msg = str(e)
-            if "net::ERR_NAME_NOT_RESOLVED" in error_msg:
-                error_msg = f"无法解析域名，请检查 URL: {url}"
-            elif "net::ERR_CONNECTION_REFUSED" in error_msg:
-                error_msg = f"连接被拒绝: {url}"
-            elif "Timeout" in error_msg:
-                error_msg = f"页面加载超时: {url}"
-            return json.dumps({"success": False, "error": error_msg})
-
-
 # 注册所有内置工具
 def register_builtin_tools(registry: Optional["ToolRegistry"] = None):
     """注册所有内置工具
@@ -3087,7 +2760,6 @@ def register_builtin_tools(registry: Optional["ToolRegistry"] = None):
     registry.register_class(ListMcpResourcesTool)
     registry.register_class(ReadMcpResourceTool)
     registry.register_class(McpAuthTool)
-    registry.register_class(BrowserTool)
     registry.register_class(ThinkingTool)
     registry.register_class(ViewTool)
     # 注册 web 工具
