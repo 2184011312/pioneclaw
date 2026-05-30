@@ -1101,7 +1101,7 @@ class TaskComment(Base):
 | shell | `countbot/backend/modules/tools/shell.py` | 安全Shell执行+危险命令拦截 | 低 |
 | file_search | `countbot/backend/modules/tools/file_search.py` | 通配符文件搜索 | 低 |
 | monitoring | `countbot/backend/modules/tools/monitoring.py` | 长时间执行进度通知 | 低 |
-| screenshot | `countbot/backend/modules/tools/screenshot.py` | 桌面/网页截图 | 中 - 依赖mss/playwright |
+| screenshot | `countbot/backend/modules/tools/screenshot.py` | 桌面截图 | 低 - 依赖mss |
 | send_media | `countbot/backend/modules/tools/send_media.py` | 渠道媒体发送 | 中 |
 | conversation_history | `countbot/backend/modules/tools/conversation_history.py` | 工具调用历史 | 低 |
 

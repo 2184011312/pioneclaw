@@ -37,7 +37,6 @@ pdfplumber==0.11.9               # PDF text extraction
 
 # ── Screenshot (Optional) ──────────────────────────────────────
 mss==10.2.0                      # Desktop screenshot (cross-platform)
-# playwright 已移除，浏览器自动化由 arc-tunnel MCP server 提供
 
 # ── Image / OCR (Optional) ────────────────────────────────────
 easyocr==1.7.2                  # OCR text extraction from images
