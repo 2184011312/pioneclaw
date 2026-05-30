@@ -521,30 +521,40 @@ async def auto_discover_mcp_servers() -> dict:
                 project_root / "external" / "arc-tunnel" / "mcp-server" / "dist" / "mcp-server.js"
             )
 
-            if mcp_server_js.exists() and shutil.which("node"):
-                if "arc-tunnel" not in registry._servers:
-                    registry.register_server(
-                        name="arc-tunnel",
-                        transport="stdio",
-                        command="node",
-                        args=[str(mcp_server_js)],
-                        env={"WS_PORT": settings.ARC_TUNNEL_WS_PORT},
-                    )
-                    conn = await registry.connect_server("arc-tunnel")
-                    if conn.status == "connected":
-                        summary["connected"] += 1
-                        logger.info(
-                            f"[MCP] 内置 arc-tunnel 已连接: {len(conn.tools)} 工具"
-                        )
-                    else:
-                        summary["failed"] += 1
-                        summary["errors"].append(
-                            {"server": "arc-tunnel", "error": conn.error_message}
-                        )
-            else:
+            arc_tunnel_dir = project_root / "external" / "arc-tunnel"
+            if not arc_tunnel_dir.exists() or not any(arc_tunnel_dir.iterdir()):
                 logger.warning(
-                    "[MCP] ARC_TUNNEL_ENABLED=true 但 arc-tunnel 未找到或 node 不可用"
+                    "[MCP] ARC_TUNNEL_ENABLED=true 但 arc-tunnel submodule 未初始化。"
+                    "请运行: git submodule update --init --recursive"
                 )
+            elif not mcp_server_js.exists():
+                logger.warning(
+                    "[MCP] ARC_TUNNEL_ENABLED=true 但 arc-tunnel 预构建产物缺失。"
+                    "请在 external/arc-tunnel/ 目录下运行 npm run build"
+                )
+            elif not shutil.which("node"):
+                logger.warning(
+                    "[MCP] ARC_TUNNEL_ENABLED=true 但系统中未找到 node 命令"
+                )
+            elif "arc-tunnel" not in registry._servers:
+                registry.register_server(
+                    name="arc-tunnel",
+                    transport="stdio",
+                    command="node",
+                    args=[str(mcp_server_js)],
+                    env={"WS_PORT": settings.ARC_TUNNEL_WS_PORT},
+                )
+                conn = await registry.connect_server("arc-tunnel")
+                if conn.status == "connected":
+                    summary["connected"] += 1
+                    logger.info(
+                        f"[MCP] 内置 arc-tunnel 已连接: {len(conn.tools)} 工具"
+                    )
+                else:
+                    summary["failed"] += 1
+                    summary["errors"].append(
+                        {"server": "arc-tunnel", "error": conn.error_message}
+                    )
     except Exception as e:
         logger.debug(f"[MCP] 内置 arc-tunnel 自动注册跳过: {e}")
 
