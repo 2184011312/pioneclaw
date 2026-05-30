@@ -1,0 +1,71 @@
+{
+  "body": "## 综合 Review — PR #102\n\n综合 4 个 review 意见，按严重度分级。\n\n| 级别 | 数量 | 关键项 |\n|------|------|--------|\n| **Must Fix** | 4 | 同步阻塞、死代码、半功能实例、update回滚缺失 |\n| **Should Fix** | 5 | 封装破坏、JSON脆弱、upper()文件名bug、MEMORY.md无上限、required冲突 |\n| **Suggestion** | 3 | DSN正则、scanFiles缓存、HTTP连接池 |",
+  "event": "COMMENT",
+  "comments": [
+    {
+      "path": "backend/app/modules/memory/manager.py",
+      "line": 120,
+      "body": "**Must Fix — 同步 HTTP 阻塞事件循环**: `httpx.Client(timeout=60.0)` 是同步 HTTP 客户端。`_build_default_llm_fns()` 在 `create_memory_manager()` (line 211) 中被调用，而后者在 FastAPI 异步请求处理路径中被调用。同步阻塞会冻结整个 asyncio 事件循环最长 60 秒。修复: 短期用 `asyncio.to_thread()` 包装；长期重构为 `httpx.AsyncClient`。"
+    },
+    {
+      "path": "backend/app/modules/memory/manager.py",
+      "line": 54,
+      "body": "**Should Fix — DSN URL 前缀替换脆弱**: `sync_url.replace(prefix, \"\")` 在密码或 hostname 中包含 `+aiosqlite` 等子串时会错误修改 URL。建议用正则: `re.sub(r'^\\w+\\+(?:aiosqlite|asyncpg)://', r'\\1://', url)`"
+    },
+    {
+      "path": "backend/app/modules/memory/manager.py",
+      "line": 211,
+      "body": "**Must Fix — 同步 DB 查询**: `_build_default_llm_fns()` 内部执行 `create_engine()` + `Session()` + `session.execute()` 同步 DB 查询，在异步 FastAPI 路径中会阻塞事件循环。建议在 `main.py` lifespan 中预加载默认 LLM 配置到内存，避免在请求路径中查询 DB。"
+    },
+    {
+      "path": "backend/app/modules/memory/memory_manage.py",
+      "line": 642,
+      "body": "**Must Fix — 死代码**: `_classify_type()` (line 642-666) 和紧随其下方的 `_classify_memory_destination()` (line 668-716) 从未被任何调用点使用。`_save_decision()` 已一站式完成 type/name/description/target 全部决策。建议删除或标注 reserved。"
+    },
+    {
+      "path": "backend/app/modules/memory/memory_manage.py",
+      "line": 326,
+      "body": "**Must Fix — `update()` 缺少 rollback**: `_create_new_entry()` (line 286) 在 index 更新失败时会执行 `store.delete_file()` 回滚。但 `update()` 方法中 `store.write_file(existing)` (line 323) 后 index 更新失败只打 `logger.warning`，不回滚，导致文件内容已改变但索引不同步。"
+    },
+    {
+      "path": "backend/app/modules/memory/memory_manage.py",
+      "line": 593,
+      "body": "**Should Fix — JSON 解析启发式脆弱**: `text.strip(chr(96)).strip()` 后直接 `json.loads()`。LLM 常在 JSON 外附带文字（如 `Here is the result: { ... }`），strip() 无法处理此类输出，导致 JSONDecodeError 触发 fallback。建议用 `re.search(r'\\{[\\s\\S]*\\}', text)` 提取 JSON 对象。"
+    },
+    {
+      "path": "backend/app/modules/memory/memory_manage.py",
+      "line": 703,
+      "body": "**Should Fix — `upper()` 导致文件名大小写不匹配**: `decision[\\\"target_filename\\\"] = ...strip().upper()` 将 LLM 返回的文件名（如 `user-preference.md`）转为 `USER-PREFERENCE.MD`，然后直接传给 `self.store.read_file(target)`。在大小写敏感的文件系统上（Linux 生产环境），这会导致文件找不到。修复：只在判断 `target.upper() != \\\"NEW\\\"` 时用 upper，传给 `read_file()` 时用原始大小写。"
+    },
+    {
+      "path": "backend/app/modules/memory/memory_manage.py",
+      "line": 169,
+      "body": "**Suggestion — scan_files() 高频调用**: `all_entries = self.store.scan_files()` 每次 `save()` 都扫描文件系统。记忆数量增长后 I/O 开销增大。建议加 mtime 缓存（30s TTL）。"
+    },
+    {
+      "path": "backend/app/modules/memory/memory_manage.py",
+      "line": 821,
+      "body": "**Must Fix — `_summarize_content()` 同步阻塞**: `self._llm_query(prompt)` 是同步 HTTP 调用，在 `save()` 和 `update()` 路径中被调用。每次 memory_save 都会触发同步网络请求，阻塞 asyncio 事件循环最多 60 秒。修复: `asyncio.to_thread(self._llm_query, prompt)`"
+    },
+    {
+      "path": "backend/app/api/agent_execute.py",
+      "line": 210,
+      "body": "**Should Fix — 单例属性突变破坏封装**: 直接修改 `existing._llm_query` / `existing.ranker._llm_query` / `existing.extractor._run_agent` 三个私有属性。绕过 MemoryManage 公开 API，依赖内部实现。建议在 MemoryManage 上增加 `update_llm_fns(llm_query_fn, extract_agent_fn)` 方法。"
+    },
+    {
+      "path": "backend/app/api/chat.py",
+      "line": 35,
+      "body": "**Must Fix — 创建的记忆实例缺少 LLM 能力**: `create_memory_manager(memory_root)` 不传 `llm_query_fn`，导致 chat 路径中的 memory manager 所有 LLM 功能（摘要、排序、去重）全部失效，退化为纯文件操作。建议在 `main.py` lifespan 中统一初始化 `create_memory_manager(memory_root, llm_query_fn=...)`，`_ensure_memory_manager` 只负责获取已注册实例。"
+    },
+    {
+      "path": "backend/app/modules/agent/context.py",
+      "line": 271,
+      "body": "**Should Fix — MEMORY.md 全文注入无上限**: 每次构建系统提示都 `f.read()` 读取 MEMORY.md 全文。记忆增长后（100+ 条目）可达数万 token，导致 context window 超标和 token 成本增加。建议加条目限制: `lines = index_content.splitlines()[:50]`"
+    },
+    {
+      "path": "backend/app/modules/tools/builtin.py",
+      "line": 2262,
+      "body": "**Should Fix — `required = [\\\"query\\\"]` 与 `filename` 参数冲突**: 新增的 `filename` 参数可以直接读取记忆而无需 query，但 `required` 仍然强制要求 query。要么把 required 改为空列表，要么在 `validate_arguments` 中自定义验证（至少传 query 或 filename 一个）。"
+    }
+  ]
+}

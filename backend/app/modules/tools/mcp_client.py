@@ -528,7 +528,7 @@ async def auto_discover_mcp_servers() -> dict:
                         transport="stdio",
                         command="node",
                         args=[str(mcp_server_js)],
-                        env={"WS_PORT": "8765"},
+                        env={"WS_PORT": settings.ARC_TUNNEL_WS_PORT},
                     )
                     conn = await registry.connect_server("arc-tunnel")
                     if conn.status == "connected":

@@ -69,6 +69,7 @@ class Settings(BaseSettings):
 
     # Arc Tunnel 浏览器自动化（可选）
     ARC_TUNNEL_ENABLED: bool = False  # 设为 true 启用内置 arc-tunnel MCP server
+    ARC_TUNNEL_WS_PORT: str = "8765"  # WebSocket 端口，避免与现有服务冲突可修改
 
     class Config:
         env_file = ".env"
