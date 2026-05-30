@@ -588,7 +588,6 @@ class TestMCPAutoDiscover:
     async def test_auto_discover_arc_tunnel_success(self):
         """ARC_TUNNEL_ENABLED=true 且文件存在时，成功注册并连接"""
         import tempfile
-        from pathlib import Path
 
         from app.modules.tools.mcp_client import auto_discover_mcp_servers
 
@@ -632,7 +631,6 @@ class TestMCPAutoDiscover:
     async def test_auto_discover_arc_tunnel_not_found(self):
         """ARC_TUNNEL_ENABLED=true 但 arc-tunnel 文件不存在时跳过"""
         import tempfile
-        from pathlib import Path
 
         from app.modules.tools.mcp_client import auto_discover_mcp_servers
 
